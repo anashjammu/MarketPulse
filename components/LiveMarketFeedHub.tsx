@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { DataTable, type Column } from "@/components/DataTable";
-import { DataQualityLabel, SimpleLocalTime } from "@/components/LocalTime";
+import { SimpleLocalTime } from "@/components/LocalTime";
 import { LiveMarketSearch } from "@/components/LiveMarketSearch";
 import { Panel } from "@/components/Panel";
 import { TickerLink } from "@/components/TickerLink";
@@ -11,8 +10,7 @@ import { cn } from "@/lib/utils";
 
 const feedCategories = ["All", "AI", "Earnings", "Semiconductors", "Macro", "Fed", "Yields", "Stocks", "Futures", "Energy", "Metals", "Crypto", "Bonds", "Analyst Ratings", "Geopolitics", "Finance"];
 const articleFilters = feedCategories;
-const rangeFilters = ["Today", "3D", "7D", "30D"];
-type ActiveTab = "Market Feed" | "Articles" | "Calendar";
+const rangeFilters = ["Today", "7D"];
 
 type NewsStatus = {
   source: string;
@@ -22,17 +20,6 @@ type NewsStatus = {
   range: string;
   count: number;
 };
-
-const calendarColumns: Column<EconomicCalendarItem>[] = [
-  { key: "time", header: "Time", render: (row) => <span className="text-terminal-cyan"><SimpleLocalTime value={row.time} /></span> },
-  { key: "event", header: "Event", render: (row) => row.event },
-  { key: "previous", header: "Previous", align: "right", render: (row) => row.previous },
-  { key: "forecast", header: "Forecast", align: "right", render: (row) => row.forecast },
-  { key: "actual", header: "Actual", align: "right", render: (row) => row.actual },
-  { key: "impact", header: "Impact", align: "right", render: (row) => <ImpactPill impact={row.impact} /> },
-  { key: "relatedTickers", header: "Related", render: (row) => <TickerList symbols={row.relatedTickers} /> },
-  { key: "reaction", header: "Market Reaction", render: (row) => row.marketReaction }
-];
 
 export function LiveMarketFeedHub({
   feedItems,
@@ -49,21 +36,22 @@ export function LiveMarketFeedHub({
   marketBrief: MarketBrief;
   newsStatus: NewsStatus;
 }) {
-  const [activeTab, setActiveTab] = useState<ActiveTab>("Market Feed");
-  const [feedCategory, setFeedCategory] = useState("All");
   const [articleFilter, setArticleFilter] = useState("All");
   const [articleQuery, setArticleQuery] = useState("");
   const [dateRange, setDateRange] = useState("Today");
-  const [feedState, setFeedState] = useState(feedItems);
   const [articleState, setArticleState] = useState(articleItems);
-  const [breakingState, setBreakingState] = useState(breakingItems);
   const [statusState, setStatusState] = useState(newsStatus);
-  const [briefState, setBriefState] = useState(marketBrief);
+  const [page, setPage] = useState(1);
   const [loadingNews, setLoadingNews] = useState(false);
 
-  const filteredFeed = useMemo(() => filterByRange(filterFeed(feedState, feedCategory), dateRange), [dateRange, feedCategory, feedState]);
   const filteredArticles = useMemo(() => filterByRange(filterArticles(articleState, articleFilter, articleQuery), dateRange), [articleFilter, articleState, articleQuery, dateRange]);
-  const latestBreaking = breakingState[0];
+  const pageSize = 12;
+  const totalPages = Math.max(1, Math.ceil(filteredArticles.length / pageSize));
+  const pagedArticles = useMemo(() => filteredArticles.slice((page - 1) * pageSize, page * pageSize), [filteredArticles, page]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [articleFilter, articleQuery, dateRange]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -74,9 +62,7 @@ export function LiveMarketFeedHub({
       .then((response) => response.json())
       .then((payload) => {
         const articles: NewsItem[] = Array.isArray(payload.data) ? payload.data.map(apiArticleToNewsItem).sort(sortNewestFirst) : [];
-        setFeedState(articles.map((item: NewsItem) => ({ ...item, type: "feed" })));
         setArticleState(articles.map((item: NewsItem) => ({ ...item, type: "article" })));
-        setBreakingState(articles.slice(0, 1).map((item: NewsItem) => ({ ...item, type: "feed" })));
         setStatusState({
           source: payload.source ?? "Unavailable",
           status: articles.length ? labelNewsStatus(payload.status) : "Unavailable",
@@ -85,14 +71,11 @@ export function LiveMarketFeedHub({
           range: dateRange,
           count: articles.length
         });
-        setBriefState(buildBriefFromNews(articles));
       })
       .catch((error) => {
         if (error.name !== "AbortError") {
           setStatusState((current) => ({ ...current, status: "Unavailable", count: 0 }));
-          setFeedState([]);
           setArticleState([]);
-          setBreakingState([]);
         }
       })
       .finally(() => setLoadingNews(false));
@@ -102,66 +85,50 @@ export function LiveMarketFeedHub({
 
   return (
     <div className="grid gap-3">
-      <Panel title="Live Market Hub" action={<DataQualityLabel />}>
+      <Panel title="Search">
         <LiveMarketSearch />
       </Panel>
 
-      {latestBreaking ? <BreakingNewsStrip item={latestBreaking} /> : null}
-
-      <MarketTonePanel brief={briefState} />
-
-      <div className="rounded-xl border border-white/[0.10] bg-white/[0.045] p-2">
-        <div className="grid grid-cols-3 gap-2">
-          {(["Market Feed", "Articles", "Calendar"] as ActiveTab[]).map((tab) => (
-            <button
-              key={tab}
-              type="button"
-              onClick={() => setActiveTab(tab)}
-              className={cn(
-                "rounded-lg px-3 py-2 font-mono text-xs transition",
-                activeTab === tab ? "bg-terminal-cyan text-black" : "text-terminal-muted hover:bg-white/[0.06] hover:text-terminal-text"
-              )}
-            >
-              {tab}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {activeTab === "Market Feed" ? (
-        <Panel title="Market Feed" action={<NewsStatusLine status={statusState} loading={loadingNews} />}>
-          <FilterBar items={rangeFilters} value={dateRange} onChange={setDateRange} />
-          <div className="mt-2" />
-          <FilterBar items={feedCategories} value={feedCategory} onChange={setFeedCategory} />
-          <div className="mt-3 grid gap-1.5">
-            {filteredFeed.length ? <GroupedFeed items={filteredFeed} range={dateRange} /> : <EmptyState message="No articles found" />}
-          </div>
-        </Panel>
-      ) : null}
-
-      {activeTab === "Articles" ? (
-        <Panel title="Articles" action={<span className="text-xs text-terminal-muted">Latest market-related articles</span>}>
-          <div className="grid gap-3">
-            <FilterBar items={articleFilters} value={articleFilter} onChange={setArticleFilter} />
+      <Panel title="Articles" action={<NewsStatusLine status={statusState} loading={loadingNews} />}>
+        <div className="grid gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <FilterBar items={rangeFilters} value={dateRange} onChange={setDateRange} />
-            <input
-              value={articleQuery}
-              onChange={(event) => setArticleQuery(event.target.value)}
-              placeholder="Filter articles..."
-              className="terminal-input"
-            />
-            <div className="grid gap-3 lg:grid-cols-2">
-              {filteredArticles.length ? <GroupedArticles items={filteredArticles} range={dateRange} /> : <EmptyState message={loadingNews ? "Loading latest articles..." : "No articles found"} />}
-            </div>
+            <FilterBar items={articleFilters} value={articleFilter} onChange={setArticleFilter} />
           </div>
-        </Panel>
-      ) : null}
-
-      {activeTab === "Calendar" ? (
-        <Panel title="Economic Calendar">
-          <DataTable columns={calendarColumns} rows={calendarItems} />
-        </Panel>
-      ) : null}
+          <input
+            value={articleQuery}
+            onChange={(event) => setArticleQuery(event.target.value)}
+            placeholder="Search articles, sources, or tickers"
+            className="terminal-input"
+          />
+          <div className="grid gap-3 lg:grid-cols-2">
+            {pagedArticles.length ? <GroupedArticles items={pagedArticles} range={dateRange} /> : <EmptyState message={loadingNews ? "Loading latest articles..." : "No articles found"} />}
+          </div>
+          {totalPages > 1 ? (
+            <div className="flex items-center justify-between gap-3 border-t border-white/[0.08] pt-3">
+              <span className="text-xs text-terminal-muted">Page {page} of {totalPages}</span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPage((current) => Math.max(1, current - 1))}
+                  disabled={page <= 1}
+                  className="rounded-lg border border-white/[0.12] bg-white/[0.03] px-3 py-1.5 text-xs text-terminal-text transition disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+                  disabled={page >= totalPages}
+                  className="rounded-lg border border-white/[0.12] bg-white/[0.03] px-3 py-1.5 text-xs text-terminal-text transition disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </Panel>
     </div>
   );
 }
@@ -270,7 +237,7 @@ function GroupedArticles({ items, range }: { items: NewsItem[]; range: string })
     <div className="grid gap-3 lg:col-span-2">
       {newsGroups(items, range).map((group) => (
         <section key={group.title} className="grid gap-3">
-          <div className="font-mono text-xs uppercase tracking-[0.12em] text-terminal-muted">{group.title}</div>
+          <div className="text-xs font-medium uppercase tracking-[0.08em] text-terminal-muted">{group.title}</div>
           <div className="grid gap-3 lg:grid-cols-2">
             {group.items.map((item) => <ArticleCard key={item.id} item={item} />)}
           </div>
@@ -289,8 +256,8 @@ function FilterBar({ items, value, onChange }: { items: string[]; value: string;
           type="button"
           onClick={() => onChange(item)}
           className={cn(
-            "rounded-full border px-3 py-1.5 font-mono text-xs transition",
-            value === item ? "border-terminal-cyan/35 bg-terminal-cyan/[0.12] text-terminal-cyan" : "border-white/10 bg-white/[0.045] text-terminal-muted hover:border-white/20 hover:text-terminal-text"
+            "rounded-lg border px-3 py-1.5 text-xs transition",
+            value === item ? "border-terminal-cyan/35 bg-terminal-cyan/[0.12] text-terminal-cyan" : "border-white/10 bg-white/[0.03] text-terminal-muted hover:border-white/20 hover:text-terminal-text"
           )}
         >
           {item}

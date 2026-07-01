@@ -3,10 +3,34 @@
 @tailwind utilities;
 
 :root {
-  color-scheme: dark;
-  background: #070b1a;
+  color-scheme: dark light;
+  background: #0f1115;
+  --app-bg: #0f1115;
+  --app-bg-soft: #141820;
+  --app-panel: #171c24;
+  --app-panel-muted: #1b212b;
+  --app-border: rgba(255, 255, 255, 0.10);
+  --app-border-strong: rgba(255, 255, 255, 0.16);
+  --app-text: #f3f5f8;
+  --app-muted: #a8b0bc;
+  --app-accent: #62b8d3;
   --font-geist-sans: Inter, "Geist Sans", "Aptos", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-geist-mono: "Geist Mono", "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    background: #f6f7f9;
+    --app-bg: #f6f7f9;
+    --app-bg-soft: #eef1f4;
+    --app-panel: #ffffff;
+    --app-panel-muted: #fafbfc;
+    --app-border: rgba(15, 23, 42, 0.10);
+    --app-border-strong: rgba(15, 23, 42, 0.16);
+    --app-text: #10151f;
+    --app-muted: #5f6b7d;
+    --app-accent: #3d89a8;
+  }
 }
 
 * {
@@ -17,13 +41,12 @@ body {
   margin: 0;
   min-height: 100vh;
   background:
-    radial-gradient(circle at top left, rgba(56, 217, 255, 0.18), transparent 34rem),
-    radial-gradient(circle at 80% 10%, rgba(110, 231, 183, 0.12), transparent 28rem),
-    linear-gradient(135deg, #070b1a 0%, #0d1424 45%, #121827 100%);
-  color: #f8fbff;
+    radial-gradient(circle at top left, color-mix(in srgb, var(--app-accent) 10%, transparent), transparent 40rem),
+    linear-gradient(160deg, var(--app-bg) 0%, var(--app-bg-soft) 100%);
+  color: var(--app-text);
   font-family: var(--font-geist-sans);
   font-feature-settings: "cv02", "cv03", "cv04", "ss01";
-  text-rendering: geometricPrecision;
+  text-rendering: optimizeLegibility;
 }
 
 h1,
@@ -39,43 +62,41 @@ h3 {
 @layer components {
   .terminal-grid {
     background:
-      radial-gradient(circle at top left, rgba(56, 217, 255, 0.15), transparent 34rem),
-      radial-gradient(circle at right 12rem, rgba(246, 199, 104, 0.08), transparent 30rem),
-      linear-gradient(135deg, #070b1a 0%, #0d1424 45%, #121827 100%);
+      radial-gradient(circle at top left, color-mix(in srgb, var(--app-accent) 8%, transparent), transparent 34rem),
+      linear-gradient(165deg, var(--app-bg) 0%, var(--app-bg-soft) 100%);
   }
 
   .terminal-scrollbar {
-    scrollbar-color: #3c506d #0b1220;
+    scrollbar-color: color-mix(in srgb, var(--app-muted) 40%, transparent) transparent;
     scrollbar-width: thin;
   }
 
   .glass-panel {
-    background: rgba(10, 18, 32, 0.82);
-    backdrop-filter: blur(22px);
+    background: color-mix(in srgb, var(--app-panel) 86%, transparent);
+    backdrop-filter: blur(14px);
   }
 
   .terminal-input {
-    height: 2.5rem;
+    height: 2.65rem;
     width: 100%;
-    border-radius: 0.75rem;
-    border: 1px solid rgba(148, 163, 184, 0.18);
-    background: rgba(8, 15, 28, 0.72);
-    padding: 0 0.75rem;
-    font-family: var(--font-geist-mono);
-    font-size: 0.875rem;
-    color: #f8fbff;
+    border-radius: 0.65rem;
+    border: 1px solid var(--app-border);
+    background: color-mix(in srgb, var(--app-panel-muted) 92%, transparent);
+    padding: 0 0.9rem;
+    font-family: var(--font-geist-sans);
+    font-size: 0.95rem;
+    color: var(--app-text);
     outline: none;
-    transition: border-color 160ms ease;
-    font-variant-numeric: tabular-nums;
+    transition: border-color 160ms ease, box-shadow 160ms ease;
   }
 
   .terminal-input::placeholder {
-    color: #8291a8;
+    color: var(--app-muted);
   }
 
   .terminal-input:focus {
-    border-color: rgba(56, 217, 255, 0.7);
-    box-shadow: 0 0 0 3px rgba(56, 217, 255, 0.08);
+    border-color: color-mix(in srgb, var(--app-accent) 65%, white);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-accent) 16%, transparent);
   }
 }
 

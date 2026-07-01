@@ -42,7 +42,7 @@ export function InteractivePriceChart({
   loading = false,
   error,
   emptyMessage = "No chart data available",
-  timezoneLabel = "Chart times shown in your local timezone."
+  timezoneLabel = ""
 }: {
   title: string;
   symbol: string;
@@ -256,44 +256,44 @@ export function InteractivePriceChart({
   const hasData = chartData.length > 0;
 
   return (
-    <div className="min-w-0 rounded-xl border border-white/[0.10] bg-white/[0.045] shadow-[0_18px_45px_rgba(0,0,0,0.18)] backdrop-blur">
+    <div className="min-w-0 rounded-xl border border-white/[0.10] bg-white/[0.03] shadow-[0_10px_28px_rgba(0,0,0,0.12)]">
       <div className="flex flex-col gap-3 border-b border-white/[0.08] p-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="truncate text-sm font-semibold text-terminal-text">{title}</h3>
-            <span className="rounded-full border border-terminal-cyan/25 bg-terminal-cyan/[0.10] px-2.5 py-0.5 font-mono text-[11px] text-terminal-cyan">
+            <span className="rounded-full border border-terminal-cyan/25 bg-terminal-cyan/[0.10] px-2.5 py-0.5 text-[11px] text-terminal-cyan">
               {symbol.toUpperCase()}
             </span>
             {latestPrice ? <span className="font-mono text-xs text-terminal-cyan">{formatPrice(latestPrice)}</span> : null}
           </div>
-          <p className="mt-1 text-xs text-terminal-muted">{timezoneLabel}</p>
+          {timezoneLabel ? <p className="mt-1 text-xs text-terminal-muted">{timezoneLabel}</p> : null}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex rounded-xl border border-white/10 bg-black/20 p-1">
+          <div className="flex rounded-lg border border-white/10 bg-white/[0.02] p-1">
             {(["candles", "line"] as ChartView[]).map((mode) => (
               <button
                 key={mode}
                 type="button"
                 onClick={() => setView(mode)}
                 className={cn(
-                  "rounded-lg px-2 py-1 font-mono text-[11px] uppercase tracking-normal transition",
-                  view === mode ? "bg-terminal-cyan text-black" : "text-terminal-muted hover:text-terminal-text"
+                  "rounded-md px-2.5 py-1 text-[11px] uppercase tracking-normal transition",
+                  view === mode ? "bg-terminal-cyan/[0.22] text-terminal-text" : "text-terminal-muted hover:text-terminal-text"
                 )}
               >
                 {mode === "candles" ? "Candles" : "Line"}
               </button>
             ))}
           </div>
-          <div className="flex flex-wrap rounded-xl border border-white/10 bg-black/20 p-1">
+          <div className="flex flex-wrap rounded-lg border border-white/10 bg-white/[0.02] p-1">
             {chartTimeframes.map((item) => (
               <button
                 key={item}
                 type="button"
                 onClick={() => setTimeframe(item)}
                 className={cn(
-                  "rounded-lg px-2 py-1 font-mono text-[11px] transition",
-                  timeframe === item ? "bg-white/15 text-terminal-text" : "text-terminal-muted hover:text-terminal-text"
+                  "rounded-md px-2 py-1 font-mono text-[11px] transition",
+                  timeframe === item ? "bg-white/[0.14] text-terminal-text" : "text-terminal-muted hover:text-terminal-text"
                 )}
               >
                 {item}

@@ -1,7 +1,7 @@
 import { DataTable, type Column } from "@/components/DataTable";
 import { AIInsight } from "@/components/AIInsight";
 import { InteractivePriceChart } from "@/components/InteractivePriceChart";
-import { DataQualityLabel, SimpleLocalTime } from "@/components/LocalTime";
+import { SimpleLocalTime } from "@/components/LocalTime";
 import { MetricCard } from "@/components/MetricCard";
 import { Panel } from "@/components/Panel";
 import { TerminalShell } from "@/components/TerminalShell";
@@ -159,8 +159,8 @@ export async function TickerDetailPage({ symbol: rawSymbol }: { symbol: string }
   return (
     <TerminalShell
       active=""
-      title={`${detail.symbol} Research Terminal`}
-      subtitle="Ticker detail view with quote data, interactive price action, fundamentals, setup analysis, news, peers, and compact AI context."
+      title={`${detail.symbol} Research`}
+      subtitle="Price chart, key stats, setup analysis, earnings, latest news, peer comparison, and AI insight."
     >
       <div className="grid gap-3">
         <Panel
@@ -182,7 +182,7 @@ export async function TickerDetailPage({ symbol: rawSymbol }: { symbol: string }
         {detail.unavailableFields.length ? (
           <Panel title="Some data unavailable">
             <div className="rounded-lg border border-terminal-amber/20 bg-white/[0.045] p-4 text-sm text-terminal-amber">
-              Some data unavailable: {detail.unavailableFields.join(", ")}. Connect a market data provider to populate this section.
+              Data unavailable from configured providers: {detail.unavailableFields.join(", ")}.
             </div>
           </Panel>
         ) : null}
@@ -277,14 +277,9 @@ export async function TickerDetailPage({ symbol: rawSymbol }: { symbol: string }
           })}
         />
 
-        <DataStatusRow />
       </div>
     </TerminalShell>
   );
-}
-
-function DataStatusRow() {
-  return <div className="px-1 text-xs text-terminal-muted"><DataQualityLabel /></div>;
 }
 
 function buildTickerDetail(

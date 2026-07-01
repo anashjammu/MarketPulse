@@ -1,5 +1,5 @@
 import { InteractivePriceChart } from "@/components/InteractivePriceChart";
-import { DataQualityLabel, LocalTime } from "@/components/LocalTime";
+import { LocalTime } from "@/components/LocalTime";
 import { MetricCard } from "@/components/MetricCard";
 import { Panel } from "@/components/Panel";
 import { TerminalShell } from "@/components/TerminalShell";
@@ -21,24 +21,21 @@ export async function FuturesDetailPage({ symbol: rawSymbol }: { symbol: string 
     );
   }
 
-  const { overview, profile, chart, sessionSnapshot, contractSpecs, marketDrivers, relatedMarkets, feedItems, source, status, delay, updatedAt } = pageData;
+  const { overview, profile, chart, sessionSnapshot, contractSpecs, marketDrivers, relatedMarkets, feedItems } = pageData;
 
   return (
     <TerminalShell
       active=""
-      title={`${profile.symbol} Futures Terminal`}
-      subtitle="Futures contract view with chart, session data, contract specs, market drivers, related markets, and futures feed."
+      title={`${profile.symbol} Futures`}
+      subtitle="Futures contract view with chart, session data, contract specs, market drivers, related markets, and news."
     >
       <div className="grid gap-3">
-        <Panel title={`${profile.symbol} — ${profile.name}`} action={<span className="font-mono text-xs text-terminal-muted">Status: {status}</span>}>
+        <Panel title={`${profile.symbol} — ${profile.name}`}>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <MetricCard label="Last Price" value={overview.price > 0 ? `$${overview.price.toFixed(2)}` : "Data unavailable"} change={overview.price > 0 ? overview.change : undefined} />
             <MetricCard label="Asset Type" value="Future" detail={profile.category} />
             <MetricCard label="Contract" value={profile.contractCode} detail={profile.contractMonth} />
-            <MetricCard label="Exchange" value={profile.exchange} detail={source} />
-          </div>
-          <div className="mt-3 text-xs text-terminal-muted">
-            Last updated: <LocalTime value={updatedAt} variant="dateTime" /> / Source: {source}
+            <MetricCard label="Exchange" value={profile.exchange} />
           </div>
         </Panel>
 
@@ -95,8 +92,7 @@ export async function FuturesDetailPage({ symbol: rawSymbol }: { symbol: string 
           </div>
         </Panel>
 
-        <div className="grid gap-2 px-1 text-xs leading-5 text-terminal-muted">
-          <DataQualityLabel source={source} status={status} delay={delay} updatedAt={updatedAt} />
+        <div className="px-1 text-xs leading-5 text-terminal-muted">
           <p>Futures are leveraged products and can involve substantial risk. This page is for research and education only, not trading advice.</p>
         </div>
       </div>
@@ -126,7 +122,6 @@ function FuturesFeedCard({ item }: { item: NewsItem }) {
         <a href={item.url} target="_blank" rel="noreferrer" className="text-terminal-cyan underline-offset-4 hover:underline">
           Read source
         </a>
-        <span className="text-terminal-muted">Why it matters: futures can transmit macro and commodity moves into ETFs, sectors, and rates-sensitive stocks.</span>
       </div>
     </article>
   );

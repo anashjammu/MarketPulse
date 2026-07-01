@@ -16,8 +16,8 @@ export default async function LiveMarketFeedPage() {
   return (
     <TerminalShell
       active="/live-market-feed"
-      title="Live Market Feed"
-      subtitle="Unified market-moving headlines, articles, macro updates, economic calendar, and ticker search."
+      title="Articles"
+      subtitle="Latest market-related articles"
     >
       <LiveMarketFeedHub
         feedItems={feedItems}

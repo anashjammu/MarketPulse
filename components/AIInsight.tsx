@@ -16,21 +16,21 @@ export function AIInsight({ title = "AI Insight", analysis }: { title?: string; 
   }, [analysis.generatedAt]);
 
   return (
-    <section className="rounded-md border border-white/[0.08] bg-white/[0.06]">
-      <div className="flex flex-col gap-2 border-b border-white/[0.08] px-3 py-2.5 md:flex-row md:items-center md:justify-between">
+    <section className="rounded-xl border border-white/[0.08] bg-white/[0.03]">
+      <div className="flex flex-col gap-2 border-b border-white/[0.08] px-4 py-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <div className="font-mono text-xs uppercase tracking-[0.14em] text-terminal-cyan">{title}</div>
-          <div className="mt-1 text-xs text-terminal-muted">Provider data required / Updated {localTime}</div>
+          <div className="text-sm font-semibold text-terminal-text">{title}</div>
+          <div className="mt-1 text-xs text-terminal-muted">Updated {localTime}</div>
         </div>
         <button
           type="button"
           onClick={() => setExpanded((value) => !value)}
-          className="self-start rounded-md border border-white/10 bg-white/[0.045] px-3 py-1.5 font-mono text-xs text-terminal-muted transition hover:border-white/20 hover:text-terminal-text md:self-auto"
+          className="self-start rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs text-terminal-muted transition hover:border-white/20 hover:text-terminal-text md:self-auto"
         >
           {expanded ? "Collapse insight" : "Expand insight"}
         </button>
       </div>
-      <div className="p-3">
+      <div className="p-4">
         <p className="text-sm leading-6 text-terminal-text">{analysis.plainEnglishSummary}</p>
         <p className="mt-2 text-sm leading-6 text-terminal-muted">{analysis.whyItMatters}</p>
 
@@ -53,11 +53,11 @@ export function AIInsight({ title = "AI Insight", analysis }: { title?: string; 
 
 function InsightList({ title, items }: { title: string; items: string[] }) {
   return (
-    <div className="rounded-lg border border-white/10 bg-white/[0.045] p-3">
-      <div className="font-mono text-xs uppercase tracking-[0.12em] text-terminal-muted">{title}</div>
+    <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+      <div className="text-xs font-medium uppercase tracking-[0.08em] text-terminal-muted">{title}</div>
       <div className="mt-2 flex flex-wrap gap-2">
         {items.map((item) => (
-          <span key={item} className="rounded-md border border-white/10 bg-white/[0.06] px-2.5 py-1 text-xs text-terminal-text">
+          <span key={item} className="rounded-md border border-white/10 bg-white/[0.04] px-2.5 py-1 text-xs text-terminal-text">
             {item}
           </span>
         ))}
@@ -68,12 +68,12 @@ function InsightList({ title, items }: { title: string; items: string[] }) {
 
 function CitationList({ sources }: { sources: AIAnalysis["sources"] }) {
   if (!sources.length) {
-    return <div className="rounded-lg border border-white/10 bg-white/[0.045] p-3 text-xs text-terminal-muted">Sources unavailable</div>;
+    return <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3 text-xs text-terminal-muted">Sources unavailable</div>;
   }
 
   return (
-    <div className="rounded-lg border border-white/10 bg-white/[0.045] p-3">
-      <div className="font-mono text-xs uppercase tracking-[0.12em] text-terminal-muted">Sources</div>
+    <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+      <div className="text-xs font-medium uppercase tracking-[0.08em] text-terminal-muted">Sources</div>
       <div className="mt-2 grid gap-2">
         {sources.map((source) => (
           <a
@@ -81,9 +81,9 @@ function CitationList({ sources }: { sources: AIAnalysis["sources"] }) {
             href={source.url}
             target="_blank"
             rel="noreferrer"
-            className="rounded-md border border-white/10 bg-white/[0.04] p-2 text-xs leading-5 text-terminal-muted transition hover:border-terminal-cyan/35 hover:text-terminal-text"
+            className="rounded-md border border-white/10 bg-white/[0.03] p-2 text-xs leading-5 text-terminal-muted transition hover:border-terminal-cyan/30 hover:text-terminal-text"
           >
-            <span className="font-mono text-terminal-cyan">{source.sourceName}</span>
+            <span className="font-medium text-terminal-cyan">{source.sourceName}</span>
             <span className="mx-2 text-terminal-muted">/</span>
             {source.title}
           </a>

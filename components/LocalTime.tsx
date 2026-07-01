@@ -56,9 +56,8 @@ export function DataQualityLabel({
   updatedAt?: string;
 }) {
   return (
-    <span className="font-mono text-xs text-terminal-muted">
-      Source: {source} / Status: {status} / Delay: {delay} / Last updated: <LocalTime value={updatedAt} variant="dateTime" /> / Timezone:{" "}
-      <LocalTimezoneLabel />
+    <span className="text-xs text-terminal-muted">
+      Data from configured providers. Last updated: <LocalTime value={updatedAt} variant="dateTime" />
     </span>
   );
 }
