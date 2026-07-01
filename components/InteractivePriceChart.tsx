@@ -33,6 +33,18 @@ type TooltipState = {
   volume: number;
 } | null;
 
+type QuoteApiResponse = {
+  data?: {
+    price?: number;
+  };
+};
+
+type HistoryApiResponse = {
+  data?: {
+    candles?: OhlcvCandle[];
+  };
+};
+
 export function InteractivePriceChart({
   title,
   symbol,
@@ -60,11 +72,12 @@ export function InteractivePriceChart({
   const [view, setView] = useState<ChartView>("candles");
   const [tooltip, setTooltip] = useState<TooltipState>(null);
   const [remoteCandles, setRemoteCandles] = useState<Partial<Record<ChartTimeframe, OhlcvCandle[]>>>({});
+  const [livePrice, setLivePrice] = useState<number | undefined>(currentPrice);
   const [remoteLoading, setRemoteLoading] = useState(false);
   const [remoteError, setRemoteError] = useState<string | undefined>();
 
   const candles = remoteCandles[timeframe] ?? candlesByTimeframe[timeframe] ?? [];
-  const latestPrice = currentPrice ?? candles.at(-1)?.close;
+  const latestPrice = livePrice ?? currentPrice ?? candles.at(-1)?.close;
 
   const chartData = useMemo(() => {
     return candles.map((candle) => {
@@ -108,6 +121,67 @@ export function InteractivePriceChart({
 
     return () => controller.abort();
   }, [candlesByTimeframe, remoteCandles, symbol, timeframe]);
+
+  useEffect(() => {
+    setLivePrice(currentPrice);
+  }, [currentPrice]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    const refreshQuote = async () => {
+      try {
+        const response = await fetch(`/api/quote/${encodeURIComponent(symbol)}`, { signal: controller.signal });
+        const payload = await response.json() as QuoteApiResponse;
+        const price = payload.data?.price;
+        if (typeof price === "number" && Number.isFinite(price) && price > 0) {
+          setLivePrice(price);
+        }
+      } catch {
+        // Keep the current on-screen quote when polling fails.
+      }
+    };
+
+    void refreshQuote();
+    const quoteTimer = window.setInterval(refreshQuote, 30_000);
+
+    return () => {
+      controller.abort();
+      window.clearInterval(quoteTimer);
+    };
+  }, [symbol]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const { range, interval } = chartRequestForTimeframe(timeframe);
+    const pollMs = chartPollIntervalForTimeframe(timeframe);
+
+    const refreshChart = async () => {
+      try {
+        const response = await fetch(`/api/history/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}`, { signal: controller.signal });
+        const payload = await response.json() as HistoryApiResponse;
+        const nextCandles = payload.data?.candles ?? [];
+        if (nextCandles.length) {
+          setRemoteCandles((current) => ({ ...current, [timeframe]: nextCandles }));
+          setRemoteError(undefined);
+        }
+      } catch {
+        // Avoid replacing existing candles with an error during background polling.
+      }
+    };
+
+    if (pollMs > 0) {
+      const timer = window.setInterval(refreshChart, pollMs);
+      return () => {
+        controller.abort();
+        window.clearInterval(timer);
+      };
+    }
+
+    return () => {
+      controller.abort();
+    };
+  }, [symbol, timeframe]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -338,6 +412,14 @@ function chartRequestForTimeframe(timeframe: ChartTimeframe) {
     "5Y": { range: "5Y", interval: "1wk" }
   };
   return map[timeframe];
+}
+
+function chartPollIntervalForTimeframe(timeframe: ChartTimeframe) {
+  if (timeframe === "1D") return 60_000;
+  if (timeframe === "5D") return 180_000;
+  if (timeframe === "1Mo" || timeframe === "3Mo") return 300_000;
+  if (timeframe === "6Mo" || timeframe === "YTD") return 600_000;
+  return 900_000;
 }
 
 function chartTimeFromCandle(value: string): Time {

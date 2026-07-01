@@ -38,7 +38,6 @@ type TechnicalIndicator = {
 type Fundamental = {
   metric: string;
   value: string;
-  context: string;
 };
 
 type Earnings = {
@@ -47,6 +46,16 @@ type Earnings = {
   eps: string;
   surprise: string;
   guide: string;
+};
+
+type PeerMetrics = {
+  marketCap: string;
+  pe: string;
+  revenueGrowth: string;
+  expenseRatio: string;
+  dividendYield: string;
+  exchange: string;
+  category: string;
 };
 
 type RelatedNews = {
@@ -98,6 +107,7 @@ type TickerDetail = {
   etfProfile: ETFProfile | null;
   futureProfile: FutureProfile | null;
   peers: Ticker[];
+  peerMetrics: Record<string, PeerMetrics>;
   debugMeta: {
     quoteStatus: string;
     historyStatus: string;
@@ -116,8 +126,7 @@ type TickerDetail = {
 
 const fundamentalColumns: Column<Fundamental>[] = [
   { key: "metric", header: "Metric", render: (row) => <span className="text-terminal-cyan">{row.metric}</span> },
-  { key: "value", header: "Value", align: "right", render: (row) => row.value },
-  { key: "context", header: "Context", render: (row) => row.context }
+  { key: "value", header: "Value", align: "right", render: (row) => row.value }
 ];
 
 const earningsColumns: Column<Earnings>[] = [
@@ -136,7 +145,7 @@ const newsColumns: Column<RelatedNews>[] = [
 
 export async function TickerDetailPage({ symbol: rawSymbol }: { symbol: string }) {
   const symbol = decodeURIComponent(rawSymbol).trim().toUpperCase();
-  const [quotePayload, profilePayload, newsPayload, technicalPayload, fundamentalsPayload, earningsPayload, peers] = await Promise.all([
+  const [quotePayload, profilePayload, newsPayload, technicalPayload, fundamentalsPayload, earningsPayload, peerPayload] = await Promise.all([
     fetchRealQuote(symbol),
     fetchRealProfile(symbol),
     fetchRealTickerNews(symbol),
@@ -175,7 +184,8 @@ export async function TickerDetailPage({ symbol: rawSymbol }: { symbol: string }
     earnings: earningsPayload.data ?? [],
     ratings: ratingsPayload.data,
     ratingsMeta: ratingsPayload.meta,
-    peers,
+    peers: peerPayload.peers,
+    peerMetrics: peerPayload.metrics,
     payloads: {
       quotePayload,
       profilePayload,
@@ -213,9 +223,9 @@ export async function TickerDetailPage({ symbol: rawSymbol }: { symbol: string }
         >
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <MetricCard label={detail.name} value={detail.price > 0 ? `$${detail.price.toFixed(2)}` : "Data unavailable"} change={detail.price > 0 ? detail.change : undefined} />
-            <MetricCard label="Daily Change" value={formatChange(detail.change)} detail="Provider quote" />
-            <MetricCard label="Volume" value={detail.volume} detail="Provider tape" />
-            <MetricCard label={detail.assetType === "future" ? "Exchange" : detail.assetType === "ETF" ? "AUM" : "Market Cap"} value={detail.marketCap} detail={`${formatAssetType(detail.assetType)} / Provider profile`} />
+            <MetricCard label="Daily Change" value={formatChange(detail.change)} />
+            <MetricCard label="Volume" value={detail.volume} />
+            <MetricCard label={detail.assetType === "future" ? "Exchange" : detail.assetType === "ETF" ? "AUM" : "Market Cap"} value={detail.marketCap} detail={formatAssetType(detail.assetType)} />
           </div>
         </Panel>
 
@@ -303,9 +313,9 @@ export async function TickerDetailPage({ symbol: rawSymbol }: { symbol: string }
                 { key: "name", header: "Name", render: (row: Ticker) => row.name },
                 { key: "price", header: "Price", align: "right", render: (row: Ticker) => row.price > 0 ? `$${row.price.toFixed(2)}` : "Unavailable" },
                 { key: "change", header: "Daily %", align: "right", render: (row: Ticker) => formatChange(row.change) },
-                { key: "size", header: detail.assetType === "ETF" ? "AUM" : "Market Cap", align: "right", render: (row: Ticker) => peerOverviewValue(row.symbol, detail.assetType === "ETF" ? "marketCap" : "marketCap") },
-                { key: "valuation", header: detail.assetType === "ETF" ? "Expense Ratio" : detail.assetType === "future" ? "Exchange" : "P/E", align: "right", render: (row: Ticker) => peerOverviewValue(row.symbol, detail.assetType === "ETF" ? "expenseRatio" : detail.assetType === "future" ? "exchange" : "pe") },
-                { key: "growth", header: detail.assetType === "ETF" ? "Dividend Yield" : detail.assetType === "future" ? "Category" : "Revenue Growth", align: "right", render: (row: Ticker) => peerOverviewValue(row.symbol, detail.assetType === "ETF" ? "dividendYield" : detail.assetType === "future" ? "category" : "revenueGrowth") }
+                { key: "size", header: detail.assetType === "ETF" ? "AUM" : "Market Cap", align: "right", render: (row: Ticker) => peerOverviewValue(detail.peerMetrics, row.symbol, "marketCap") },
+                { key: "valuation", header: detail.assetType === "ETF" ? "Expense Ratio" : detail.assetType === "future" ? "Exchange" : "P/E", align: "right", render: (row: Ticker) => peerOverviewValue(detail.peerMetrics, row.symbol, detail.assetType === "ETF" ? "expenseRatio" : detail.assetType === "future" ? "exchange" : "pe") },
+                { key: "growth", header: detail.assetType === "ETF" ? "Dividend Yield" : detail.assetType === "future" ? "Category" : "Revenue Growth", align: "right", render: (row: Ticker) => peerOverviewValue(detail.peerMetrics, row.symbol, detail.assetType === "ETF" ? "dividendYield" : detail.assetType === "future" ? "category" : "revenueGrowth") }
               ]}
               rows={detail.peers}
             />
@@ -347,6 +357,7 @@ function buildTickerDetail(
     ratings: NormalizedRatings;
     ratingsMeta: RatingsMeta;
     peers: Ticker[];
+    peerMetrics: Record<string, PeerMetrics>;
     payloads: {
       quotePayload: Awaited<ReturnType<typeof fetchRealQuote>>;
       profilePayload: Awaited<ReturnType<typeof fetchRealProfile>>;
@@ -373,7 +384,7 @@ function buildTickerDetail(
   const sector = providerData.profile?.sector ?? "Unavailable";
   const revenueGrowth = fundamentalValue(providerData.fundamentals, "Revenue Growth");
   const epsGrowth = fundamentalValue(providerData.fundamentals, "EPS Growth");
-  const volume = providerData.quote?.volume ? providerData.quote.volume.toLocaleString() : "Unavailable";
+  const volume = providerData.quote?.volume ? formatCompactNumber(providerData.quote.volume) : "Unavailable";
   const marketCap = providerData.quote?.marketCap ?? providerData.profile?.marketCap;
   const pe = fundamentalValue(providerData.fundamentals, "P/E");
   const analystTargetRange = fundamentalValue(providerData.fundamentals, "Analyst Target Range") === "Unavailable" ? "Unavailable" : fundamentalValue(providerData.fundamentals, "Analyst Target Range");
@@ -416,19 +427,19 @@ function buildTickerDetail(
     averageVolume: fundamentalValue(providerData.fundamentals, "Average Volume"),
     chart: providerData.chartByRange,
     keyStats: [
-      { label: "Sector", value: sector, detail: "Provider classification" },
-      { label: "Relative Volume", value: relativeVolumeValue(providerData.technicals), detail: "Versus available average volume" },
-      { label: "Forward P/E", value: fundamentalValue(providerData.fundamentals, "Forward P/E"), detail: "Provider estimate" },
-      { label: "Revenue Growth", value: revenueGrowth, detail: "Provider growth metric" },
-      { label: "EPS Growth", value: epsGrowth, detail: "Provider growth metric" },
-      { label: "Debt/Equity", value: fundamentalValue(providerData.fundamentals, "Debt/Equity"), detail: "Balance sheet leverage" },
-      { label: "Average Volume", value: fundamentalValue(providerData.fundamentals, "Average Volume"), detail: "Provider liquidity" },
+      { label: "Sector", value: sector },
+      { label: "Relative Volume", value: relativeVolumeValue(providerData.technicals) },
+      { label: "Forward P/E", value: fundamentalValue(providerData.fundamentals, "Forward P/E") },
+      { label: "Revenue Growth", value: revenueGrowth },
+      { label: "EPS Growth", value: epsGrowth },
+      { label: "Debt/Equity", value: fundamentalValue(providerData.fundamentals, "Debt/Equity") },
+      { label: "Average Volume", value: fundamentalValue(providerData.fundamentals, "Average Volume") },
       ...(overview.assetType === "ETF" && overview.etfProfile
         ? [
-            { label: "Expense Ratio", value: overview.etfProfile.expenseRatio, detail: "Provider ETF profile" },
-            { label: "Holdings", value: overview.etfProfile.holdingsCount, detail: "Provider basket count" }
+            { label: "Expense Ratio", value: overview.etfProfile.expenseRatio },
+            { label: "Holdings", value: overview.etfProfile.holdingsCount }
           ]
-        : [{ label: "Analyst Target Range", value: analystTargetRange, detail: "Bear / base / bull" }])
+        : [{ label: "Analyst Target Range", value: analystTargetRange }])
     ],
     technicals: providerData.technicals,
     fundamentals: providerData.fundamentals,
@@ -453,6 +464,7 @@ function buildTickerDetail(
     etfProfile: overview.assetType === "ETF" ? overview.etfProfile : null,
     futureProfile: null,
     peers: providerData.peers,
+    peerMetrics: providerData.peerMetrics,
     debugMeta: {
       quoteStatus: providerData.payloads.quotePayload.status,
       historyStatus: providerData.payloads.history5D.status,
@@ -483,22 +495,50 @@ function buildTickerDetail(
   };
 }
 
-async function fetchRealPeers(symbol: string): Promise<Ticker[]> {
+async function fetchRealPeers(symbol: string): Promise<{ peers: Ticker[]; metrics: Record<string, PeerMetrics> }> {
   const peers = fetchPeers(symbol);
-  if (!peers.length) return [];
-  const quotes = await Promise.all(peers.map((peer) => fetchRealQuote(peer.symbol)));
+  if (!peers.length) return { peers: [], metrics: {} };
+  const [quotes, fundamentals] = await Promise.all([
+    Promise.all(peers.map((peer) => fetchRealQuote(peer.symbol))),
+    Promise.all(peers.map((peer) => fetchRealFundamentals(peer.symbol)))
+  ]);
 
-  return peers.map((peer, index) => {
+  const metrics: Record<string, PeerMetrics> = {};
+
+  const hydrated = peers.map((peer, index) => {
     const quote = quotes[index].data;
+    const rows = fundamentals[index].data ?? [];
+    const overview = fetchTickerOverview(peer.symbol);
+    const revenueGrowth = fundamentalValue(rows, "Revenue Growth");
+    const pe = fundamentalValue(rows, "P/E");
+    const marketCapFromFundamentals = parseCurrencyValue(fundamentalValue(rows, "Market Cap"));
+
+    metrics[peer.symbol.toUpperCase()] = {
+      marketCap: quote?.marketCap
+        ? formatLargeNumber(quote.marketCap)
+        : marketCapFromFundamentals
+          ? formatLargeNumber(marketCapFromFundamentals)
+          : "Unavailable",
+      pe: pe !== "Unavailable" ? pe : "Unavailable",
+      revenueGrowth: revenueGrowth !== "Unavailable" ? revenueGrowth : "Unavailable",
+      expenseRatio: overview.assetType === "ETF" ? overview.etfProfile.expenseRatio : "N/A",
+      dividendYield: overview.assetType === "ETF" ? overview.etfProfile.dividendYield : "N/A",
+      exchange: overview.assetType === "future" ? overview.futureProfile.exchange : "N/A",
+      category: overview.assetType === "future" ? overview.futureProfile.category : "N/A"
+    };
+
     return {
       ...peer,
       name: quote?.name ?? peer.name,
       price: quote?.price ?? 0,
       change: quote?.changePercent ?? 0,
-      volume: quote?.volume ? quote.volume.toLocaleString() : "Unavailable",
-      marketCap: quote?.marketCap ? formatLargeNumber(quote.marketCap) : "Unavailable"
+      volume: quote?.volume ? formatCompactNumber(quote.volume) : "Unavailable",
+      marketCap: metrics[peer.symbol.toUpperCase()].marketCap,
+      sector: fundamentalValue(rows, "Sector") !== "Unavailable" ? fundamentalValue(rows, "Sector") : peer.sector
     };
   });
+
+  return { peers: hydrated, metrics };
 }
 
 function fundamentalValue(rows: Fundamental[], metric: string) {
@@ -533,6 +573,29 @@ function formatLargeNumber(value: number) {
   return `$${value.toLocaleString()}`;
 }
 
+function formatCompactNumber(value: number) {
+  return new Intl.NumberFormat("en-US", {
+    notation: "compact",
+    maximumFractionDigits: 1
+  }).format(value);
+}
+
+function parseCurrencyValue(value: string) {
+  if (!value || value === "Unavailable") return null;
+  const normalized = value.replace(/[$,\s]/g, "").toUpperCase();
+  const multiplier = normalized.endsWith("T")
+    ? 1_000_000_000_000
+    : normalized.endsWith("B")
+      ? 1_000_000_000
+      : normalized.endsWith("M")
+        ? 1_000_000
+        : normalized.endsWith("K")
+          ? 1_000
+          : 1;
+  const numeric = Number(normalized.replace(/[TBMK]$/, ""));
+  return Number.isFinite(numeric) ? numeric * multiplier : null;
+}
+
 function buildTechnicals(seed: number, price: number): TechnicalIndicator[] {
   const rsi = 38 + (seed % 34);
 
@@ -549,66 +612,42 @@ function buildTechnicals(seed: number, price: number): TechnicalIndicator[] {
 function buildKeyStats(detail: TickerDetail): KeyStat[] {
   if (detail.assetType === "future" && detail.futureProfile) {
     return [
-      { label: "Contract Name", value: detail.futureProfile.name, detail: "Provider futures profile" },
+      { label: "Contract Name", value: detail.futureProfile.name },
       { label: "Asset Type", value: "Future", detail: detail.futureProfile.category },
-      { label: "Session High", value: detail.futureProfile.sessionHigh, detail: "Current provider session" },
-      { label: "Session Low", value: detail.futureProfile.sessionLow, detail: "Current provider session" },
-      { label: "Open Interest", value: detail.futureProfile.openInterest, detail: "Provider contract interest" },
-      { label: "Contract Month", value: detail.futureProfile.contractMonth, detail: "Front/reference contract" },
-      { label: "Tick Size", value: detail.futureProfile.tickSize, detail: "Minimum price increment" },
-      { label: "Tick Value", value: detail.futureProfile.tickValue, detail: "Value per tick" },
-      { label: "Point Value", value: detail.futureProfile.pointValue, detail: "Value per full point" },
-      { label: "Exchange", value: detail.futureProfile.exchange, detail: "Trading venue" },
-      { label: "Average Volume", value: detail.averageVolume, detail: "Provider liquidity profile" },
-      { label: "Relative Volume", value: detail.keyStats.find((stat) => stat.label === "Relative Volume")?.value ?? "-", detail: "Versus 30D avg" }
+      { label: "Session High", value: detail.futureProfile.sessionHigh },
+      { label: "Session Low", value: detail.futureProfile.sessionLow },
+      { label: "Open Interest", value: detail.futureProfile.openInterest },
+      { label: "Contract Month", value: detail.futureProfile.contractMonth },
+      { label: "Tick Size", value: detail.futureProfile.tickSize },
+      { label: "Tick Value", value: detail.futureProfile.tickValue },
+      { label: "Point Value", value: detail.futureProfile.pointValue },
+      { label: "Exchange", value: detail.futureProfile.exchange },
+      { label: "Average Volume", value: detail.averageVolume },
+      { label: "Relative Volume", value: detail.keyStats.find((stat) => stat.label === "Relative Volume")?.value ?? "-" }
     ];
   }
 
   return [
-    { label: "P/E", value: detail.pe, detail: detail.assetType === "ETF" ? "Not applicable" : "Blended estimate" },
-    { label: "Forward P/E", value: detail.forwardPe, detail: detail.assetType === "ETF" ? "Not applicable" : "Provider forward estimate" },
-    { label: "Revenue Growth", value: detail.revenueGrowth, detail: "Provider growth profile" },
-    { label: "EPS Growth", value: detail.epsGrowth, detail: "Provider earnings profile" },
-    { label: "Gross Margin", value: detail.grossMargin, detail: "Provider margin profile" },
-    { label: "Debt/Equity", value: detail.debtEquity, detail: "Balance sheet input" },
-    { label: "52-Week Range", value: detail.weekRange, detail: "Provider range" },
-    { label: "Average Volume", value: detail.averageVolume, detail: "Provider liquidity profile" },
+    { label: "P/E", value: detail.pe, detail: detail.assetType === "ETF" ? "Not applicable" : undefined },
+    { label: "Forward P/E", value: detail.forwardPe, detail: detail.assetType === "ETF" ? "Not applicable" : undefined },
+    { label: "Revenue Growth", value: detail.revenueGrowth },
+    { label: "EPS Growth", value: detail.epsGrowth },
+    { label: "Gross Margin", value: detail.grossMargin },
+    { label: "Debt/Equity", value: detail.debtEquity },
+    { label: "52-Week Range", value: detail.weekRange },
+    { label: "Average Volume", value: detail.averageVolume },
     ...detail.keyStats
   ];
 }
 
-function peerOverviewValue(symbol: string, field: "marketCap" | "pe" | "revenueGrowth" | "expenseRatio" | "dividendYield" | "exchange" | "category") {
-  const overview = fetchTickerOverview(symbol);
-
-  if (field === "expenseRatio") {
-    return overview.assetType === "ETF" ? overview.etfProfile.expenseRatio : "N/A";
-  }
-
-  if (field === "dividendYield") {
-    return overview.assetType === "ETF" ? overview.etfProfile.dividendYield : "N/A";
-  }
-
-  if (field === "revenueGrowth") {
-    return overview.assetType === "future" ? "N/A" : `${overview.revenueGrowth}%`;
-  }
-
-  if (field === "exchange") {
-    return overview.assetType === "future" ? overview.futureProfile.exchange : "N/A";
-  }
-
-  if (field === "category") {
-    return overview.assetType === "future" ? overview.futureProfile.category : "N/A";
-  }
-
-  if (field === "marketCap") {
-    return overview.assetType === "future" ? overview.exchange : overview.marketCap;
-  }
-
-  if (field === "pe") {
-    return overview.assetType === "future" ? "N/A" : overview.pe;
-  }
-
-  return "N/A";
+function peerOverviewValue(
+  metricMap: Record<string, PeerMetrics>,
+  symbol: string,
+  field: "marketCap" | "pe" | "revenueGrowth" | "expenseRatio" | "dividendYield" | "exchange" | "category"
+) {
+  const metric = metricMap[symbol.toUpperCase()];
+  if (!metric) return "Unavailable";
+  return metric[field] || "Unavailable";
 }
 
 function formatAssetType(assetType: AssetType) {

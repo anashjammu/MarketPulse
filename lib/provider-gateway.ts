@@ -306,14 +306,21 @@ type AttemptResult<T> = {
 export async function fetchRealQuote(symbol: string): Promise<ProviderPayload<NormalizedQuote>> {
   const route = `api/quote/${symbol}`;
   const providers: Array<() => Promise<AttemptResult<NormalizedQuote>>> = [
-    () => fetchFmpQuote(route, symbol),
-    () => fetchTwelveDataQuote(route, symbol),
-    () => fetchAlphaVantageQuote(route, symbol),
     () => fetchYahooQuote(route, symbol),
+    () => fetchAlphaVantageQuote(route, symbol),
+    () => fetchFinnhubQuote(route, symbol),
+    () => fetchTwelveDataQuote(route, symbol),
     () => fetchStooqQuote(route, symbol)
   ];
 
-  return firstUsable(route, providers);
+  if (serverEnv.fmpApiKey) {
+    providers.push(() => fetchFmpQuote(route, symbol));
+  }
+
+  return firstUsable(route, providers, undefined, {
+    cacheKey: `quote:${symbol.toUpperCase()}`,
+    staleError: "Quote unavailable from live providers. Returning recent cached quote."
+  });
 }
 
 export async function fetchRealHistory(symbol: string, request: HistoryRequest = {}): Promise<ProviderPayload<NormalizedHistory>> {
@@ -342,19 +349,22 @@ export async function fetchRealHistory(symbol: string, request: HistoryRequest =
 
   const providers: Array<{ label: string; run: () => Promise<AttemptResult<NormalizedHistory>> }> = intraday
     ? [
-        { label: "Financial Modeling Prep", run: () => fetchFmpHistory(route, symbol, resolvedRequest) },
-        { label: "Twelve Data", run: () => fetchTwelveDataHistory(route, symbol, resolvedRequest) },
-        { label: "Alpha Vantage", run: () => fetchAlphaVantageHistory(route, symbol, resolvedRequest) },
         { label: "Yahoo Finance", run: () => fetchYahooHistory(route, symbol, resolvedRequest) },
+        { label: "Alpha Vantage", run: () => fetchAlphaVantageHistory(route, symbol, resolvedRequest) },
+        { label: "Twelve Data", run: () => fetchTwelveDataHistory(route, symbol, resolvedRequest) },
         { label: "Stooq", run: () => fetchStooqHistory(route, symbol, resolvedRequest) }
       ]
     : [
-        { label: "Financial Modeling Prep", run: () => fetchFmpHistory(route, symbol, resolvedRequest) },
-        { label: "Twelve Data", run: () => fetchTwelveDataHistory(route, symbol, resolvedRequest) },
-        { label: "Alpha Vantage", run: () => fetchAlphaVantageHistory(route, symbol, resolvedRequest) },
         { label: "Yahoo Finance", run: () => fetchYahooHistory(route, symbol, resolvedRequest) },
+        { label: "Alpha Vantage", run: () => fetchAlphaVantageHistory(route, symbol, resolvedRequest) },
+        { label: "Finnhub", run: () => fetchFinnhubHistory(route, symbol, resolvedRequest) },
+        { label: "Twelve Data", run: () => fetchTwelveDataHistory(route, symbol, resolvedRequest) },
         { label: "Stooq", run: () => fetchStooqHistory(route, symbol, resolvedRequest) }
       ];
+
+  if (serverEnv.fmpApiKey) {
+    providers.push({ label: "Financial Modeling Prep", run: () => fetchFmpHistory(route, symbol, resolvedRequest) });
+  }
 
   const errors: string[] = [];
   for (const provider of providers) {
@@ -364,10 +374,27 @@ export async function fetchRealHistory(symbol: string, request: HistoryRequest =
 
     if (result.data?.candles.length) {
       logFinal(route, result.source, result.status, true);
-      return withHistoryMeta(withUpdatedAt(result), symbol, resolvedRequest, requestedAssetType, "equity", providerAttempts, result.source);
+      const payload = withHistoryMeta(withUpdatedAt(result), symbol, resolvedRequest, requestedAssetType, "equity", providerAttempts, result.source);
+      writeStaleProviderPayload(historyStaleCacheKey(symbol, resolvedRequest), payload);
+      return payload;
     }
 
     if (result.error) errors.push(`${result.source}: ${result.error}`);
+  }
+
+  const staleCacheKey = historyStaleCacheKey(symbol, resolvedRequest);
+  const staleHistory = readStaleProviderPayload<NormalizedHistory>(staleCacheKey);
+  if (staleHistory?.data?.candles.length) {
+    const staleResult: ProviderPayload<NormalizedHistory> = {
+      ...staleHistory,
+      source: `${staleHistory.source} (stale cache)`,
+      status: "cached",
+      delay: staleHistory.delay || "Cached",
+      error: "Chart data unavailable from live providers. Returning recent cached history.",
+      updatedAt: staleHistory.updatedAt ?? new Date().toISOString()
+    };
+    logFinal(route, staleResult.source, staleResult.status, true, staleResult.error);
+    return withHistoryMeta(staleResult, symbol, resolvedRequest, requestedAssetType, "equity", providerAttempts, staleHistory.source);
   }
 
   const missingConfig = providerAttempts.every((attempt) => attempt.error?.toLowerCase().includes("not configured"));
@@ -388,23 +415,111 @@ export async function fetchRealProfile(symbol: string): Promise<ProviderPayload<
 
 export async function fetchRealFundamentals(symbol: string): Promise<ProviderPayload<NormalizedFundamental[]>> {
   const route = `api/fundamentals/${symbol}`;
-  const providers: Array<() => Promise<AttemptResult<NormalizedFundamental[]>>> = [
-    () => fetchFmpFundamentals(route, symbol),
+  const providerFactories: Array<() => Promise<AttemptResult<NormalizedFundamental[]>>> = [
+    () => fetchYahooFundamentals(route, symbol),
     () => fetchAlphaVantageFundamentals(route, symbol),
     () => fetchFinnhubFundamentals(route, symbol),
-    () => fetchYahooFundamentals(route, symbol)
+    () => fetchTwelveDataFundamentals(route, symbol)
   ];
-  return firstUsable(route, providers, (rows) => Array.isArray(rows) && rows.some((row) => row.value !== "Unavailable"));
+  if (serverEnv.fmpApiKey) providerFactories.push(() => fetchFmpFundamentals(route, symbol));
+
+  const errors: string[] = [];
+  const collected: NormalizedFundamental[][] = [];
+  const sources: string[] = [];
+
+  for (const factory of providerFactories) {
+    const result = await factory().catch((error): AttemptResult<NormalizedFundamental[]> => failed("Provider", safeError(error)));
+    if (Array.isArray(result.data) && result.data.some((row) => row.value !== "Unavailable")) {
+      collected.push(result.data);
+      sources.push(result.source);
+    } else if (result.error) {
+      errors.push(`${result.source}: ${result.error}`);
+    }
+  }
+
+  const merged = mergeFundamentals(collected);
+  if (merged.some((row) => row.value !== "Unavailable")) {
+    const source = Array.from(new Set(sources)).join(" + ") || "Unavailable";
+    logFinal(route, source, "partial", true);
+    const payload: ProviderPayload<NormalizedFundamental[]> = {
+      data: merged,
+      source,
+      status: sources.length > 1 ? "partial" : "delayed",
+      delay: "Provider-dependent",
+      updatedAt: new Date().toISOString()
+    };
+    writeStaleProviderPayload(`fundamentals:${symbol.toUpperCase()}`, payload);
+    return payload;
+  }
+
+  const stale = readStaleProviderPayload<NormalizedFundamental[]>(`fundamentals:${symbol.toUpperCase()}`);
+  if (stale?.data?.length) {
+    return {
+      ...stale,
+      source: `${stale.source} (stale cache)`,
+      status: "cached",
+      error: "Fundamentals unavailable from live providers. Returning recent cached fundamentals.",
+      updatedAt: stale.updatedAt ?? new Date().toISOString()
+    };
+  }
+
+  const error = errors.find(Boolean) ?? "Fundamentals unavailable from configured providers.";
+  logFinal(route, "Unavailable", "unavailable", false, error);
+  return unavailable(error);
 }
 
 export async function fetchRealEarnings(symbol: string): Promise<ProviderPayload<NormalizedEarnings[]>> {
   const route = `api/earnings/${symbol}`;
-  const providers: Array<() => Promise<AttemptResult<NormalizedEarnings[]>>> = [
-    () => fetchFmpEarnings(route, symbol),
-    () => fetchAlphaVantageEarnings(route, symbol),
-    () => fetchFinnhubEarnings(route, symbol)
+  const providerFactories: Array<{ name: string; run: () => Promise<AttemptResult<NormalizedEarnings[]>> }> = [
+    { name: "Yahoo Finance", run: () => fetchYahooEarnings(route, symbol) },
+    { name: "Alpha Vantage", run: () => fetchAlphaVantageEarnings(route, symbol) },
+    { name: "Finnhub", run: () => fetchFinnhubEarnings(route, symbol) }
   ];
-  return firstUsable(route, providers, (rows) => Array.isArray(rows) && rows.length > 0);
+  if (serverEnv.fmpApiKey) providerFactories.push({ name: "FMP", run: () => fetchFmpEarnings(route, symbol) });
+
+  const errors: string[] = [];
+  const rowsByProvider: NormalizedEarnings[][] = [];
+  const sources: string[] = [];
+
+  for (const factory of providerFactories) {
+    const result = await factory.run().catch((error): AttemptResult<NormalizedEarnings[]> => failed(factory.name, safeError(error)));
+    if (Array.isArray(result.data) && result.data.length) {
+      rowsByProvider.push(result.data);
+      sources.push(result.source);
+    } else if (result.error) {
+      errors.push(`${result.source}: ${result.error}`);
+    }
+  }
+
+  const merged = mergeEarnings(rowsByProvider);
+  if (merged.length) {
+    const source = Array.from(new Set(sources)).join(" + ") || "Unavailable";
+    logFinal(route, source, "partial", true);
+    const payload: ProviderPayload<NormalizedEarnings[]> = {
+      data: merged,
+      source,
+      status: sources.length > 1 ? "partial" : "delayed",
+      delay: "Provider-dependent",
+      updatedAt: new Date().toISOString()
+    };
+    writeStaleProviderPayload(`earnings:${symbol.toUpperCase()}`, payload);
+    return payload;
+  }
+
+  const stale = readStaleProviderPayload<NormalizedEarnings[]>(`earnings:${symbol.toUpperCase()}`);
+  if (stale?.data?.length) {
+    return {
+      ...stale,
+      source: `${stale.source} (stale cache)`,
+      status: "cached",
+      error: "Earnings unavailable from live providers. Returning recent cached earnings.",
+      updatedAt: stale.updatedAt ?? new Date().toISOString()
+    };
+  }
+
+  const error = errors.find(Boolean) ?? "Earnings unavailable from configured providers.";
+  logFinal(route, "Unavailable", "unavailable", false, error);
+  return unavailable(error);
 }
 
 export async function fetchRealTechnicals(symbol: string): Promise<ProviderPayload<NormalizedTechnical[]>> {
@@ -594,7 +709,8 @@ export async function fetchFredSeries(seriesId: string): Promise<ProviderPayload
 async function firstUsable<T>(
   route: string,
   providers: Array<() => Promise<AttemptResult<T>>>,
-  isUsable: (data: T | null) => boolean = (data) => data !== null
+  isUsable: (data: T | null) => boolean = (data) => data !== null,
+  staleOptions?: { cacheKey: string; staleError: string }
 ): Promise<ProviderPayload<T>> {
   const errors: string[] = [];
   providerHealthExtras = {};
@@ -604,7 +720,9 @@ async function firstUsable<T>(
 
     if (isUsable(result.data)) {
       logFinal(route, result.source, result.status, true);
-      return withUpdatedAt(result);
+      const payload = withUpdatedAt(result);
+      if (staleOptions) writeStaleProviderPayload(staleOptions.cacheKey, payload);
+      return payload;
     }
 
     if (result.error) {
@@ -612,9 +730,44 @@ async function firstUsable<T>(
     }
   }
 
+  if (staleOptions) {
+    const stale = readStaleProviderPayload<T>(staleOptions.cacheKey);
+    if (stale && stale.data !== null) {
+      logFinal(route, `${stale.source} (stale cache)`, "cached", true, staleOptions.staleError);
+      return {
+        ...stale,
+        source: `${stale.source} (stale cache)`,
+        status: "cached",
+        delay: stale.delay || "Cached",
+        updatedAt: stale.updatedAt ?? new Date().toISOString(),
+        error: staleOptions.staleError
+      };
+    }
+  }
+
   const error = errors.find(Boolean) ?? "Real data unavailable.";
   logFinal(route, "Unavailable", "unavailable", false, error);
   return unavailable(error);
+}
+
+function staleProviderCacheKey(key: string) {
+  return `stale::${key}`;
+}
+
+function writeStaleProviderPayload<T>(key: string, payload: ProviderPayload<T>) {
+  const cacheKey = staleProviderCacheKey(key);
+  providerResponseLru.set(cacheKey, { data: payload, httpStatus: 200, keys: ["stale"] });
+}
+
+function readStaleProviderPayload<T>(key: string): ProviderPayload<T> | null {
+  const hit = providerResponseLru.get(staleProviderCacheKey(key));
+  if (!hit) return null;
+  const payload = hit.data;
+  return payload && typeof payload === "object" ? payload as ProviderPayload<T> : null;
+}
+
+function historyStaleCacheKey(symbol: string, request: HistoryRequest) {
+  return `history:${symbol.toUpperCase()}:${(request.range ?? "1Y").toUpperCase()}:${normalizeInterval(request.interval)}`;
 }
 
 async function fetchMergedNews(
@@ -1113,14 +1266,38 @@ async function fetchFmpFundamentals(route: string, symbol: string): Promise<Atte
 async function fetchFmpEarnings(route: string, symbol: string): Promise<AttemptResult<NormalizedEarnings[]>> {
   if (!serverEnv.fmpApiKey) return providerMissing(route, "FMP", symbol);
   const json = await providerJson(route, "FMP earnings", symbol, `https://financialmodelingprep.com/stable/earnings?symbol=${encodeURIComponent(symbol)}&limit=8&apikey=${serverEnv.fmpApiKey}`);
+  let income: { data: unknown } = { data: null };
+  try {
+    income = await providerJson(route, "FMP income quarterly", symbol, `https://financialmodelingprep.com/stable/income-statement?symbol=${encodeURIComponent(symbol)}&period=quarter&limit=12&apikey=${serverEnv.fmpApiKey}`);
+  } catch {
+    // Revenue backfill is optional and should not block core earnings rows.
+  }
   const rows = extractFmpPayloadRows(json.data);
+  const incomeRows = extractFmpPayloadRows(income.data);
+  const revenueByQuarter = new Map<string, number>();
+  for (const row of incomeRows) {
+    const record = asRecord(row);
+    const key = canonicalQuarterKey(stringFrom(record.date, ""));
+    const revenue = numberFrom(record.revenue);
+    if (key && revenue !== null && !revenueByQuarter.has(key)) {
+      revenueByQuarter.set(key, revenue);
+    }
+  }
+
   const earnings = rows.map((row) => {
     const record = asRecord(row);
+    const quarter = stringFrom(record.date, "Unavailable");
+    const key = canonicalQuarterKey(quarter);
+    const directRevenue = numberFrom(record.revenue);
+    const backfilledRevenue = key ? revenueByQuarter.get(key) ?? null : null;
+    const surprisePercent = numberFrom(record.revenueEstimated) && numberFrom(record.revenue)
+      ? ((numberFrom(record.revenue)! - numberFrom(record.revenueEstimated)!) / numberFrom(record.revenueEstimated)!) * 100
+      : null;
     return {
-      quarter: stringFrom(record.date, "Unavailable"),
-      revenue: currencyFrom(record.revenue),
+      quarter,
+      revenue: compactCurrencyFrom(directRevenue ?? backfilledRevenue),
       eps: valueFrom(record.eps),
-      surprise: valueFrom(record.eps ? numberFrom(record.eps)! - (numberFrom(record.epsEstimated) ?? numberFrom(record.eps)!) : null),
+      surprise: surprisePercent === null ? "Unavailable" : signedPercentFrom(surprisePercent),
       guide: record.epsEstimated ? `EPS est. ${record.epsEstimated}` : "Unavailable"
     };
   });
@@ -1142,6 +1319,21 @@ async function fetchAlphaVantageFundamentals(route: string, symbol: string): Pro
     fundamental("Gross Margin", percentDisplay(row.GrossProfitTTM && row.RevenueTTM ? numberFrom(row.GrossProfitTTM)! / numberFrom(row.RevenueTTM)! : null), "Alpha Vantage overview"),
     fundamental("Debt/Equity", valueFrom(row.DebtToEquity), "Alpha Vantage overview")
   ];
+  const marketCap = numberFrom(row.MarketCapitalization);
+  const sharesOutstanding = numberFrom(row.SharesOutstanding);
+  const dividendYield = numberFrom(row.DividendYield);
+  fields.push(
+    fundamental("Revenue", compactCurrencyFrom(row.RevenueTTM), "Alpha Vantage overview"),
+    fundamental("EPS", valueFrom(row.EPS), "Alpha Vantage overview"),
+    fundamental("Return on Equity", percentDisplay(row.ReturnOnEquityTTM), "Alpha Vantage overview"),
+    fundamental("Operating Margin", percentDisplay(row.OperatingMarginTTM), "Alpha Vantage overview"),
+    fundamental("Profit Margin", percentDisplay(row.ProfitMargin), "Alpha Vantage overview"),
+    fundamental("Dividend Yield", dividendYield === null ? "Unavailable" : percentDisplay(dividendYield), "Alpha Vantage overview"),
+    fundamental("Shares Outstanding", numberDisplay(sharesOutstanding), "Alpha Vantage overview")
+  );
+  if (marketCap !== null) {
+    fields.push(fundamental("Market Cap", compactCurrencyFrom(marketCap), "Alpha Vantage overview"));
+  }
   const usable = fields.some((row) => row.value !== "Unavailable");
   return usable ? delayed("Alpha Vantage", fields) : failed("Alpha Vantage", "Alpha Vantage overview had no usable fields.");
 }
@@ -1154,9 +1346,19 @@ async function fetchFinnhubFundamentals(route: string, symbol: string): Promise<
   ]);
   const profileRow = asRecord(profile.data);
   const metricRow = asRecord(asRecord(metrics.data).metric);
+  const marketCapAbs = finnhubMarketCapFromProfile(profileRow.marketCapitalization);
+  const shareOutstanding = numberFrom(metricRow.shareOutstanding);
+  const revenuePerShare = numberFrom(metricRow.revenuePerShareTTM);
+  const priceToSales = numberFrom(metricRow.psTTM ?? metricRow.priceToSalesTTM);
+  const estimatedRevenue =
+    revenuePerShare !== null && shareOutstanding !== null
+      ? revenuePerShare * shareOutstanding
+      : marketCapAbs !== null && priceToSales !== null && priceToSales !== 0
+        ? marketCapAbs / priceToSales
+        : null;
   const fields: NormalizedFundamental[] = [
     fundamental("Sector", stringFrom(profileRow.finnhubIndustry, "Unavailable"), "Finnhub profile"),
-    fundamental("Market Cap", currencyFrom(profileRow.marketCapitalization), "Finnhub profile"),
+    fundamental("Market Cap", compactCurrencyFrom(marketCapAbs), "Finnhub profile"),
     fundamental("P/E", valueFrom(metricRow.peBasicExclExtraTTM), "Finnhub metric"),
     fundamental("Forward P/E", valueFrom(metricRow.peForwardAnnual), "Finnhub metric"),
     fundamental("Revenue Growth", percentDisplay(metricRow.revenueGrowthTTMYoy), "Finnhub metric"),
@@ -1164,6 +1366,15 @@ async function fetchFinnhubFundamentals(route: string, symbol: string): Promise<
     fundamental("Gross Margin", percentDisplay(metricRow.grossMarginTTM), "Finnhub metric"),
     fundamental("Debt/Equity", valueFrom(metricRow.totalDebt2EquityAnnual), "Finnhub metric")
   ];
+  fields.push(
+    fundamental("Revenue", compactCurrencyFrom(estimatedRevenue), "Finnhub metric"),
+    fundamental("EPS", valueFrom(metricRow.epsInclExtraItemsTTM), "Finnhub metric"),
+    fundamental("Return on Equity", percentDisplay(metricRow.roeTTM), "Finnhub metric"),
+    fundamental("Operating Margin", percentDisplay(metricRow.operatingMarginTTM), "Finnhub metric"),
+    fundamental("Profit Margin", percentDisplay(metricRow.netMarginTTM), "Finnhub metric"),
+    fundamental("Shares Outstanding", numberDisplay(metricRow.shareOutstanding), "Finnhub metric"),
+    fundamental("Dividend Yield", percentDisplay(metricRow.currentDividendYieldTTM), "Finnhub metric")
+  );
   const usable = fields.some((row) => row.value !== "Unavailable");
   return usable ? delayed("Finnhub", fields) : failed("Finnhub", "Finnhub metrics had no usable fields.");
 }
@@ -1172,11 +1383,12 @@ async function fetchYahooFundamentals(route: string, symbol: string): Promise<At
   if (!serverEnv.yahooFinanceEnabled) return providerMissing(route, "Yahoo Finance", symbol);
   try {
     const yahooFinance = await loadYahooFinance();
-    const summary = asRecord(await yahooFinance.quoteSummary(symbol, { modules: ["summaryProfile", "defaultKeyStatistics", "financialData", "price"] }));
+    const summary = asRecord(await yahooFinance.quoteSummary(symbol, { modules: ["summaryProfile", "defaultKeyStatistics", "financialData", "price", "summaryDetail"] }));
     const financialData = asRecord(summary.financialData ?? {});
     const defaultKeyStatistics = asRecord(summary.defaultKeyStatistics ?? {});
     const profile = asRecord(summary.summaryProfile ?? {});
     const price = asRecord(summary.price ?? {});
+    const summaryDetail = asRecord(summary.summaryDetail ?? {});
     const fields: NormalizedFundamental[] = [
       fundamental("Sector", stringFrom(profile.sector, "Unavailable"), "Yahoo summary profile"),
       fundamental("Market Cap", currencyFrom(asRecord(price.marketCap).raw ?? price.marketCap), "Yahoo price module"),
@@ -1184,7 +1396,14 @@ async function fetchYahooFundamentals(route: string, symbol: string): Promise<At
       fundamental("Forward P/E", valueFrom(asRecord(defaultKeyStatistics.forwardPE).raw ?? defaultKeyStatistics.forwardPE), "Yahoo key stats"),
       fundamental("Revenue Growth", percentDisplay(asRecord(financialData.revenueGrowth).raw ?? financialData.revenueGrowth), "Yahoo financial data"),
       fundamental("Gross Margin", percentDisplay(asRecord(financialData.grossMargins).raw ?? financialData.grossMargins), "Yahoo financial data"),
-      fundamental("Debt/Equity", valueFrom(asRecord(financialData.debtToEquity).raw ?? financialData.debtToEquity), "Yahoo financial data")
+      fundamental("Debt/Equity", valueFrom(asRecord(financialData.debtToEquity).raw ?? financialData.debtToEquity), "Yahoo financial data"),
+      fundamental("Revenue", compactCurrencyFrom(asRecord(financialData.totalRevenue).raw ?? financialData.totalRevenue), "Yahoo financial data"),
+      fundamental("EPS", valueFrom(asRecord(defaultKeyStatistics.trailingEps).raw ?? defaultKeyStatistics.trailingEps), "Yahoo key stats"),
+      fundamental("Return on Equity", percentDisplay(asRecord(financialData.returnOnEquity).raw ?? financialData.returnOnEquity), "Yahoo financial data"),
+      fundamental("Operating Margin", percentDisplay(asRecord(financialData.operatingMargins).raw ?? financialData.operatingMargins), "Yahoo financial data"),
+      fundamental("Profit Margin", percentDisplay(asRecord(financialData.profitMargins).raw ?? financialData.profitMargins), "Yahoo financial data"),
+      fundamental("Dividend Yield", percentDisplay(asRecord(summaryDetail.dividendYield).raw ?? summaryDetail.dividendYield), "Yahoo summary detail"),
+      fundamental("Shares Outstanding", numberDisplay(asRecord(defaultKeyStatistics.sharesOutstanding).raw ?? defaultKeyStatistics.sharesOutstanding), "Yahoo key stats")
     ];
     const usable = fields.some((row) => row.value !== "Unavailable");
     return usable ? delayed("Yahoo Finance (delayed/unofficial)", fields) : failed("Yahoo Finance", "Yahoo fundamentals had no usable fields.");
@@ -1193,20 +1412,76 @@ async function fetchYahooFundamentals(route: string, symbol: string): Promise<At
   }
 }
 
+async function fetchTwelveDataFundamentals(route: string, symbol: string): Promise<AttemptResult<NormalizedFundamental[]>> {
+  if (!serverEnv.twelveDataApiKey) return providerMissing(route, "Twelve Data", symbol);
+  const json = await providerJson(route, "Twelve Data fundamentals", symbol, `https://api.twelvedata.com/statistics?symbol=${encodeURIComponent(symbol)}&apikey=${serverEnv.twelveDataApiKey}`);
+  const row = asRecord(json.data);
+  const valuation = asRecord(row.valuation);
+  const profitability = asRecord(row.profitability);
+  const growth = asRecord(row.growth);
+  const incomeStatement = asRecord(row.income_statement);
+
+  const fields: NormalizedFundamental[] = [
+    fundamental("P/E", valueFrom(valuation.pe_ratio), "Twelve Data statistics"),
+    fundamental("Forward P/E", valueFrom(valuation.forward_pe), "Twelve Data statistics"),
+    fundamental("Price/Sales", valueFrom(valuation.price_to_sales), "Twelve Data statistics"),
+    fundamental("Price/Book", valueFrom(valuation.price_to_book), "Twelve Data statistics"),
+    fundamental("Revenue Growth", percentDisplay(growth.revenue_growth), "Twelve Data statistics"),
+    fundamental("EPS Growth", percentDisplay(growth.eps_growth), "Twelve Data statistics"),
+    fundamental("Gross Margin", percentDisplay(profitability.gross_margin), "Twelve Data statistics"),
+    fundamental("Operating Margin", percentDisplay(profitability.operating_margin), "Twelve Data statistics"),
+    fundamental("Profit Margin", percentDisplay(profitability.profit_margin), "Twelve Data statistics"),
+    fundamental("Revenue", compactCurrencyFrom(incomeStatement.total_revenue), "Twelve Data statistics")
+  ];
+
+  const usable = fields.some((entry) => entry.value !== "Unavailable");
+  return usable ? delayed("Twelve Data", fields) : failed("Twelve Data", "Twelve Data fundamentals had no usable fields.");
+}
+
 async function fetchAlphaVantageEarnings(route: string, symbol: string): Promise<AttemptResult<NormalizedEarnings[]>> {
   if (!serverEnv.alphaVantageApiKey) return providerMissing(route, "Alpha Vantage", symbol);
   const json = await providerJson(route, "Alpha Vantage earnings", symbol, `https://www.alphavantage.co/query?function=EARNINGS&symbol=${encodeURIComponent(symbol)}&apikey=${serverEnv.alphaVantageApiKey}`);
+  let income: { data: unknown } = { data: null };
+  try {
+    income = await providerJson(route, "Alpha Vantage income", symbol, `https://www.alphavantage.co/query?function=INCOME_STATEMENT&symbol=${encodeURIComponent(symbol)}&apikey=${serverEnv.alphaVantageApiKey}`);
+  } catch {
+    // Revenue backfill is optional and should not block core earnings rows.
+  }
   const rows = Array.isArray(json.data?.quarterlyEarnings) ? json.data.quarterlyEarnings : [];
+  const incomeRecord = asRecord(income.data);
+  const incomeRows = Array.isArray(incomeRecord.quarterlyReports) ? incomeRecord.quarterlyReports : [];
+  const revenueByQuarter = new Map<string, number>();
+  for (const row of incomeRows) {
+    const record = asRecord(row);
+    const key = canonicalQuarterKey(stringFrom(record.fiscalDateEnding, ""));
+    const revenue = numberFrom(record.totalRevenue);
+    if (key && revenue !== null && !revenueByQuarter.has(key)) {
+      revenueByQuarter.set(key, revenue);
+    }
+  }
+
   const earnings = rows.slice(0, 8).map((row: unknown) => {
     const record = asRecord(row);
+    const quarter = stringFrom(record.fiscalDateEnding, "Unavailable");
+    const key = canonicalQuarterKey(quarter);
     const epsActual = numberFrom(record.reportedEPS);
     const epsEstimate = numberFrom(record.estimatedEPS);
     const surprise = epsActual !== null && epsEstimate !== null ? epsActual - epsEstimate : null;
+    const revenueActual = numberFrom(record.reportedRevenue);
+    const revenueEstimate = numberFrom(record.estimatedRevenue);
+    const backfilledRevenue = key ? revenueByQuarter.get(key) ?? null : null;
+    const revenueSurprisePercent = revenueActual !== null && revenueEstimate !== null && revenueEstimate !== 0
+      ? ((revenueActual - revenueEstimate) / revenueEstimate) * 100
+      : null;
     return {
-      quarter: stringFrom(record.fiscalDateEnding, "Unavailable"),
-      revenue: "Unavailable",
+      quarter,
+      revenue: compactCurrencyFrom(revenueActual ?? backfilledRevenue),
       eps: valueFrom(record.reportedEPS),
-      surprise: surprise === null ? "Unavailable" : `${surprise >= 0 ? "+" : ""}${surprise.toFixed(2)}`,
+      surprise: revenueSurprisePercent !== null
+        ? signedPercentFrom(revenueSurprisePercent)
+        : surprise === null
+          ? "Unavailable"
+          : `${surprise >= 0 ? "+" : ""}${surprise.toFixed(2)}`,
       guide: epsEstimate === null ? "Unavailable" : `EPS est. ${epsEstimate.toFixed(2)}`
     };
   });
@@ -1216,21 +1491,271 @@ async function fetchAlphaVantageEarnings(route: string, symbol: string): Promise
 async function fetchFinnhubEarnings(route: string, symbol: string): Promise<AttemptResult<NormalizedEarnings[]>> {
   if (!serverEnv.finnhubApiKey) return providerMissing(route, "Finnhub", symbol);
   const json = await providerJson(route, "Finnhub earnings", symbol, `https://finnhub.io/api/v1/stock/earnings?symbol=${encodeURIComponent(symbol)}&token=${serverEnv.finnhubApiKey}`);
+  let revenueEstimate: { data: unknown } = { data: null };
+  try {
+    revenueEstimate = await providerJson(route, "Finnhub revenue estimate", symbol, `https://finnhub.io/api/v1/stock/revenue-estimate?symbol=${encodeURIComponent(symbol)}&freq=quarterly&token=${serverEnv.finnhubApiKey}`);
+  } catch {
+    // Revenue backfill is optional and should not block core earnings rows.
+  }
   const rows = Array.isArray(json.data) ? json.data : [];
+  const revenueEstimateRecord = asRecord(revenueEstimate.data);
+  const estimateRows = Array.isArray(revenueEstimateRecord.data) ? revenueEstimateRecord.data : [];
+  const revenueByQuarter = new Map<string, number>();
+  for (const row of estimateRows) {
+    const record = asRecord(row);
+    const key = canonicalQuarterKey(stringFrom(record.period, ""));
+    const revenue = numberFrom(record.revenueAvg ?? record.revenueHigh ?? record.revenueLow);
+    if (key && revenue !== null && !revenueByQuarter.has(key)) {
+      revenueByQuarter.set(key, revenue);
+    }
+  }
+
   const earnings = rows.slice(0, 8).map((row: unknown) => {
     const record = asRecord(row);
+    const quarter = `${stringFrom(record.period, "Unavailable")}`;
+    const key = canonicalQuarterKey(quarter);
     const actual = numberFrom(record.actual);
     const estimate = numberFrom(record.estimate);
+    const revenueActual = numberFrom(record.revenueActual);
+    const revenueBackfill = key ? revenueByQuarter.get(key) ?? null : null;
     const surprise = actual !== null && estimate !== null ? actual - estimate : null;
     return {
-      quarter: `${stringFrom(record.period, "Unavailable")}`,
-      revenue: numberFrom(record.revenueActual) !== null ? currencyFrom(record.revenueActual) : "Unavailable",
+      quarter,
+      revenue: compactCurrencyFrom(revenueActual ?? revenueBackfill),
       eps: actual === null ? "Unavailable" : actual.toFixed(2),
       surprise: surprise === null ? "Unavailable" : `${surprise >= 0 ? "+" : ""}${surprise.toFixed(2)}`,
       guide: estimate === null ? "Unavailable" : `EPS est. ${estimate.toFixed(2)}`
     };
   });
   return earnings.length ? delayed("Finnhub", earnings) : failed("Finnhub", "Finnhub earnings had no usable rows.");
+}
+
+async function fetchYahooEarnings(route: string, symbol: string): Promise<AttemptResult<NormalizedEarnings[]>> {
+  if (!serverEnv.yahooFinanceEnabled) return providerMissing(route, "Yahoo Finance", symbol);
+  try {
+    const yahooFinance = await loadYahooFinance();
+    const history = await yahooFinance.quoteSummary(symbol, { modules: ["earningsHistory"] });
+    const rows = asRecord(asRecord(history).earningsHistory).history;
+    const items = Array.isArray(rows) ? rows.map(asRecord) : [];
+
+    let incomeHistory: unknown = null;
+    try {
+      const incomeSummary = await yahooFinance.quoteSummary(symbol, { modules: ["incomeStatementHistoryQuarterly"] });
+      incomeHistory = incomeSummary;
+    } catch {
+      // Revenue backfill is optional and should not block core earnings rows.
+    }
+
+    const incomeQuarterlyRecord = asRecord(asRecord(incomeHistory).incomeStatementHistoryQuarterly);
+    const incomeQuarterlyRows = Array.isArray(incomeQuarterlyRecord.incomeStatementHistory)
+      ? incomeQuarterlyRecord.incomeStatementHistory.map(asRecord)
+      : [];
+    const revenueByQuarter = new Map<string, number>();
+    for (const row of incomeQuarterlyRows) {
+      const record = asRecord(row);
+      const endDate = asRecord(record.endDate);
+      const quarter = stringFrom(endDate.fmt ?? endDate.raw ?? record.endDate, "");
+      const key = canonicalQuarterKey(quarter);
+      const revenue = numberFrom(asRecord(record.totalRevenue).raw ?? record.totalRevenue);
+      if (key && revenue !== null && !revenueByQuarter.has(key)) {
+        revenueByQuarter.set(key, revenue);
+      }
+    }
+
+    const earnings = items.slice(0, 8).map((record) => {
+      const quarterDate = asRecord(record.quarter).fmt ?? asRecord(record.quarter).raw ?? record.quarter;
+      const quarter = stringFrom(quarterDate, "Unavailable");
+      const key = canonicalQuarterKey(quarter);
+      const revenueActual = numberFrom(asRecord(record.revenueActual).raw ?? record.revenueActual);
+      const revenueEstimate = numberFrom(asRecord(record.revenueEstimate).raw ?? record.revenueEstimate);
+      const backfilledRevenue = key ? revenueByQuarter.get(key) ?? null : null;
+      const epsActual = numberFrom(asRecord(record.epsActual).raw ?? record.epsActual);
+      const epsEstimate = numberFrom(asRecord(record.epsEstimate).raw ?? record.epsEstimate);
+      const revenueSurprisePercent = revenueActual !== null && revenueEstimate !== null && revenueEstimate !== 0
+        ? ((revenueActual - revenueEstimate) / revenueEstimate) * 100
+        : null;
+
+      return {
+        quarter,
+        revenue: compactCurrencyFrom(revenueActual ?? backfilledRevenue),
+        eps: epsActual === null ? "Unavailable" : epsActual.toFixed(2),
+        surprise: revenueSurprisePercent !== null
+          ? signedPercentFrom(revenueSurprisePercent)
+          : epsActual !== null && epsEstimate !== null
+            ? `${epsActual - epsEstimate >= 0 ? "+" : ""}${(epsActual - epsEstimate).toFixed(2)}`
+            : "Unavailable",
+        guide: epsEstimate === null ? "Unavailable" : `EPS est. ${epsEstimate.toFixed(2)}`
+      };
+    });
+
+    const usable = earnings.some((entry) => entry.quarter !== "Unavailable");
+    return usable ? delayed("Yahoo Finance (delayed/unofficial)", earnings) : failed("Yahoo Finance", "Yahoo earnings had no usable rows.");
+  } catch (error) {
+    return failed("Yahoo Finance", safeError(error));
+  }
+}
+
+async function fetchFinnhubHistory(route: string, symbol: string, request: HistoryRequest): Promise<AttemptResult<NormalizedHistory>> {
+  if (!serverEnv.finnhubApiKey) return providerMissing(route, "Finnhub", symbol);
+  const resolution = finnhubResolutionForInterval(normalizeInterval(request.interval));
+  const to = Math.floor(Date.now() / 1000);
+  const from = to - historyDays(request.range) * 24 * 60 * 60;
+  const json = await providerJson(route, "Finnhub history", symbol, `https://finnhub.io/api/v1/stock/candle?symbol=${encodeURIComponent(symbol)}&resolution=${resolution}&from=${from}&to=${to}&token=${serverEnv.finnhubApiKey}`);
+  const record = asRecord(json.data);
+  const status = stringFrom(record.s, "");
+  const opens = Array.isArray(record.o) ? record.o : [];
+  const highs = Array.isArray(record.h) ? record.h : [];
+  const lows = Array.isArray(record.l) ? record.l : [];
+  const closes = Array.isArray(record.c) ? record.c : [];
+  const volumes = Array.isArray(record.v) ? record.v : [];
+  const timestamps = Array.isArray(record.t) ? record.t : [];
+
+  if (status !== "ok" || !timestamps.length) return failed("Finnhub", "Finnhub history response had no usable candles.");
+
+  const candles = filterHistoryCandles(
+    timestamps.map((value, index) => makeCandle(
+      new Date((numberFrom(value) ?? 0) * 1000).toISOString(),
+      opens[index],
+      highs[index],
+      lows[index],
+      closes[index],
+      volumes[index]
+    )).filter(isCandle),
+    request
+  );
+
+  return candles.length ? delayed("Finnhub", { symbol, candles }) : failed("Finnhub", "Finnhub history response had no usable candles.");
+}
+
+function finnhubResolutionForInterval(interval: string) {
+  if (interval === "1min") return "1";
+  if (interval === "5min") return "5";
+  if (interval === "15min") return "15";
+  if (interval === "30min") return "30";
+  if (interval === "60min") return "60";
+  if (interval === "1week") return "W";
+  return "D";
+}
+
+function mergeFundamentals(groups: NormalizedFundamental[][]): NormalizedFundamental[] {
+  const preferredOrder = [
+    "Sector",
+    "Market Cap",
+    "Revenue",
+    "Gross Profit",
+    "Operating Income",
+    "Net Income",
+    "EPS",
+    "P/E",
+    "Forward P/E",
+    "Price/Sales",
+    "Price/Book",
+    "Revenue Growth",
+    "EPS Growth",
+    "Gross Margin",
+    "Operating Margin",
+    "Profit Margin",
+    "Return on Equity",
+    "Debt/Equity",
+    "Free Cash Flow",
+    "Cash and Equivalents",
+    "Total Debt",
+    "Shares Outstanding",
+    "Dividend Yield",
+    "Average Volume",
+    "Analyst Target Range"
+  ];
+
+  const merged = new Map<string, NormalizedFundamental>();
+  const fallbackRows = new Map<string, NormalizedFundamental>();
+
+  for (const rows of groups) {
+    for (const row of rows) {
+      const metric = row.metric.trim();
+      if (!metric) continue;
+      const existing = merged.get(metric);
+      const unavailable = row.value === "Unavailable";
+      if (!existing && unavailable) {
+        if (!fallbackRows.has(metric)) fallbackRows.set(metric, row);
+        continue;
+      }
+      if (!existing && !unavailable) {
+        merged.set(metric, row);
+      }
+    }
+  }
+
+  for (const [metric, row] of fallbackRows.entries()) {
+    if (!merged.has(metric)) merged.set(metric, row);
+  }
+
+  const ordered: NormalizedFundamental[] = [];
+  for (const metric of preferredOrder) {
+    const row = merged.get(metric);
+    if (row) {
+      ordered.push(row);
+      merged.delete(metric);
+    }
+  }
+
+  for (const row of merged.values()) ordered.push(row);
+  return ordered;
+}
+
+function mergeEarnings(groups: NormalizedEarnings[][]): NormalizedEarnings[] {
+  const byQuarter = new Map<string, NormalizedEarnings>();
+
+  for (const rows of groups) {
+    for (const row of rows) {
+      const key = canonicalQuarterKey(row.quarter);
+      if (!key) continue;
+      const current = byQuarter.get(key);
+      if (!current) {
+        byQuarter.set(key, row);
+        continue;
+      }
+      byQuarter.set(key, {
+        quarter: current.quarter !== "Unavailable" ? current.quarter : row.quarter,
+        revenue: current.revenue !== "Unavailable" ? current.revenue : row.revenue,
+        eps: current.eps !== "Unavailable" ? current.eps : row.eps,
+        surprise: current.surprise !== "Unavailable" ? current.surprise : row.surprise,
+        guide: current.guide !== "Unavailable" ? current.guide : row.guide
+      });
+    }
+  }
+
+  return Array.from(byQuarter.values())
+    .sort((left, right) => quarterSortValue(right.quarter) - quarterSortValue(left.quarter))
+    .slice(0, 8);
+}
+
+function canonicalQuarterKey(value: string) {
+  const v = value.trim();
+  if (!v || v === "Unavailable") return "";
+  const iso = v.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) return `${iso[1]}-${iso[2]}`;
+  const textual = v.match(/([Qq][1-4])\s*[\-\/]?\s*(\d{4})/);
+  if (textual) return `${textual[2]}-${textual[1].toUpperCase()}`;
+  const date = new Date(v);
+  if (!Number.isNaN(date.getTime())) return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+  return v;
+}
+
+function quarterSortValue(value: string) {
+  const iso = value.match(/^(\d{4})-(\d{2})(?:-(\d{2}))?$/);
+  if (iso) {
+    const year = Number(iso[1]);
+    const month = Number(iso[2]);
+    return year * 100 + month;
+  }
+  const quarter = value.match(/([Qq][1-4])\s*[\-\/]?\s*(\d{4})/);
+  if (quarter) {
+    const year = Number(quarter[2]);
+    const q = Number(quarter[1].slice(1));
+    return year * 10 + q;
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 0 : date.getTime();
 }
 
 async function fetchFinnhubProfile(route: string, symbol: string): Promise<AttemptResult<NormalizedProfile>> {
@@ -1548,7 +2073,7 @@ function normalizeFinnhubQuote(row: unknown, profile: unknown, symbol: string): 
     dayHigh: numberFrom(quote.h),
     dayLow: numberFrom(quote.l),
     volume: null,
-    marketCap: numberFrom(company.marketCapitalization)
+    marketCap: finnhubMarketCapFromProfile(company.marketCapitalization)
   };
 }
 
@@ -1621,10 +2146,16 @@ function normalizeFinnhubProfile(data: unknown, symbol: string): NormalizedProfi
     description: "Data unavailable",
     exchange: stringFrom(row.exchange, "Data unavailable"),
     currency: stringFrom(row.currency, "USD"),
-    marketCap: numberFrom(row.marketCapitalization),
+    marketCap: finnhubMarketCapFromProfile(row.marketCapitalization),
     website: stringFrom(row.weburl, ""),
     image: stringFrom(row.logo, "")
   };
+}
+
+function finnhubMarketCapFromProfile(value: unknown) {
+  const number = numberFrom(value);
+  if (number === null) return null;
+  return number * 1_000_000;
 }
 
 function normalizeFmpCandle(row: unknown): NormalizedCandle | null {
@@ -1973,7 +2504,7 @@ function providerHttpError(status: number) {
 function safeError(error: unknown) {
   if (!(error instanceof Error)) return "unknown";
   const message = error.message;
-  if (message.includes("API") || message.includes("limit") || message.includes("unavailable") || message.includes("usable") || message.includes("configured") || message.includes("unexpected") || message.includes("authentication") || message.includes("failed")) {
+  if (message.includes("API") || message.includes("limit") || message.includes("unavailable") || message.includes("usable") || message.includes("configured") || message.includes("unexpected") || message.includes("authentication") || message.includes("failed") || message.includes("fetch") || message.includes("network") || message.includes("timeout") || message.includes("invalid") || message.includes("status")) {
     return message;
   }
   return "request_failed";
@@ -2950,6 +3481,12 @@ function valueFrom(value: unknown) {
   return number === null ? "Unavailable" : number.toLocaleString("en-US", { maximumFractionDigits: 2 });
 }
 
+function signedPercentFrom(value: number | null) {
+  if (value === null || !Number.isFinite(value)) return "Unavailable";
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${value.toFixed(2)}%`;
+}
+
 function percentDisplay(value: unknown) {
   const number = numberFrom(value);
   if (number === null) return "Unavailable";
@@ -2967,6 +3504,17 @@ function currencyFrom(value: unknown) {
     notation: Math.abs(number) >= 1_000_000 ? "compact" : "standard",
     maximumFractionDigits: Math.abs(number) >= 1_000_000 ? 2 : 0
   }).format(number);
+}
+
+function compactCurrencyFrom(value: unknown) {
+  const number = numberFrom(value);
+  if (number === null) return "Unavailable";
+
+  const abs = Math.abs(number);
+  if (abs >= 1_000_000_000) return `$${(number / 1_000_000_000).toFixed(2)}B`;
+  if (abs >= 1_000_000) return `$${(number / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `$${(number / 1_000).toFixed(1)}K`;
+  return `$${number.toFixed(0)}`;
 }
 
 function percentValue(value: number | null) {
