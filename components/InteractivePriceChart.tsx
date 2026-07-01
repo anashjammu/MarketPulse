@@ -68,7 +68,7 @@ export function InteractivePriceChart({
 
   const chartData = useMemo(() => {
     return candles.map((candle) => {
-      const time = Math.floor(new Date(candle.time).getTime() / 1000) as UTCTimestamp;
+      const time = chartTimeFromCandle(candle.time);
       return {
         time,
         open: candle.open,
@@ -81,7 +81,7 @@ export function InteractivePriceChart({
   }, [candles]);
 
   useEffect(() => {
-    if ((candlesByTimeframe[timeframe] ?? []).length || remoteCandles[timeframe]) {
+    if (remoteCandles[timeframe]) {
       return;
     }
 
@@ -96,12 +96,12 @@ export function InteractivePriceChart({
         const nextCandles = payload.data?.candles ?? [];
         setRemoteCandles((current) => ({ ...current, [timeframe]: nextCandles }));
         if (!nextCandles.length) {
-          setRemoteError(payload.error ?? "Real intraday chart data unavailable for this timeframe.");
+          setRemoteError(payload.error ?? `${timeframe} data unavailable from configured providers.`);
         }
       })
       .catch((error) => {
         if (error.name !== "AbortError") {
-          setRemoteError("Real intraday chart data unavailable for this timeframe.");
+          setRemoteError(`${timeframe} data unavailable from configured providers.`);
         }
       })
       .finally(() => setRemoteLoading(false));
@@ -227,7 +227,8 @@ export function InteractivePriceChart({
         return;
       }
 
-      const raw = chartData.find((item) => item.time === param.time);
+      const hoverTime = param.time;
+      const raw = chartData.find((item) => chartTimesEqual(item.time, hoverTime));
 
       if (!raw) {
         setTooltip(null);
@@ -237,7 +238,7 @@ export function InteractivePriceChart({
       setTooltip({
         x: Math.min(Math.max(param.point.x + 16, 12), Math.max(container.clientWidth - 220, 12)),
         y: Math.min(Math.max(param.point.y + 16, 12), 220),
-        time: formatDateTimeInUserTimeZone(new Date(Number(raw.time) * 1000)),
+        time: formatChartTooltipTime(raw.time),
         open: raw.open,
         high: raw.high,
         low: raw.low,
@@ -333,8 +334,8 @@ function chartRequestForTimeframe(timeframe: ChartTimeframe) {
     "30m": { range: "1M", interval: "30m" },
     "1h": { range: "1M", interval: "1h" },
     "4h": { range: "3M", interval: "4h" },
-    "1D": { range: "1D", interval: "1d" },
-    "5D": { range: "5D", interval: "1d" },
+    "1D": { range: "1D", interval: "5m" },
+    "5D": { range: "5D", interval: "15m" },
     "1Mo": { range: "1M", interval: "1d" },
     "3Mo": { range: "3M", interval: "1d" },
     "6Mo": { range: "6M", interval: "1d" },
@@ -343,6 +344,31 @@ function chartRequestForTimeframe(timeframe: ChartTimeframe) {
     "5Y": { range: "5Y", interval: "1d" }
   };
   return map[timeframe];
+}
+
+function chartTimeFromCandle(value: string): Time {
+  const daily = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (daily) {
+    return {
+      year: Number(daily[1]),
+      month: Number(daily[2]),
+      day: Number(daily[3])
+    };
+  }
+
+  return Math.floor(new Date(value).getTime() / 1000) as UTCTimestamp;
+}
+
+function chartTimesEqual(left: Time, right: Time) {
+  if (typeof left === "number" || typeof right === "number") return left === right;
+  if (typeof left === "string" || typeof right === "string") return left === right;
+  return left.year === right.year && left.month === right.month && left.day === right.day;
+}
+
+function formatChartTooltipTime(time: Time) {
+  if (typeof time === "number") return formatDateTimeInUserTimeZone(new Date(time * 1000));
+  if (typeof time === "string") return time;
+  return `${time.year}-${String(time.month).padStart(2, "0")}-${String(time.day).padStart(2, "0")}`;
 }
 
 function ChartState({ label, tone = "muted" }: { label: string; tone?: "muted" | "error" }) {

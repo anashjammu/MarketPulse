@@ -12,7 +12,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ symb
   return NextResponse.json(
     {
       ...successResponse(payload.data, { source: payload.source, status: payload.status, delay: payload.delay, updatedAt: payload.updatedAt }),
-      error: payload.error
+      error: payload.error,
+      meta: payload.meta
     },
     { headers: providerCacheHeaders }
   );

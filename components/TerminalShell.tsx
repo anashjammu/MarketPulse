@@ -33,8 +33,8 @@ export function TerminalShell({
                 <Orbit className="h-4 w-4" />
               </div>
               <div>
-                <div className="text-sm font-bold tracking-tight text-terminal-text">MarketPulse</div>
-                <div className="font-mono text-[11px] text-terminal-muted">Live market research terminal</div>
+                <div className="text-sm font-bold tracking-tight text-terminal-text">StockerView</div>
+                <div className="font-mono text-[11px] text-terminal-muted">Market research terminal</div>
               </div>
             </div>
           </div>

@@ -9,6 +9,7 @@ import { TickerLink } from "@/components/TickerLink";
 import type { Ticker } from "@/lib/app-data";
 import { buildEmptyCandleSet, type ChartTimeframe, type OhlcvCandle } from "@/lib/chart-data";
 import { calculateOpportunityScore, type OpportunityScoreResult } from "@/lib/opportunity-scoring";
+import { fetchRatingsSignal, type NormalizedRatings, type RatingsMeta } from "@/lib/server/providers/ratings";
 import {
   fetchRealEarnings,
   fetchRealFundamentals,
@@ -92,6 +93,8 @@ type TickerDetail = {
   verdict: string;
   unavailableFields: string[];
   opportunityAnalysis: OpportunityScoreResult;
+  ratings: NormalizedRatings;
+  ratingsMeta: RatingsMeta;
   etfProfile: ETFProfile | null;
   futureProfile: FutureProfile | null;
   peers: Ticker[];
@@ -129,6 +132,7 @@ export async function TickerDetailPage({ symbol: rawSymbol }: { symbol: string }
     fetchRealEarnings(symbol),
     fetchRealPeers(symbol)
   ]);
+  const ratingsPayload = await fetchRatingsSignal(symbol, newsPayload.data ?? []);
   const detail = buildTickerDetail(symbol, {
     quote: quotePayload.data,
     profile: profilePayload.data,
@@ -137,6 +141,8 @@ export async function TickerDetailPage({ symbol: rawSymbol }: { symbol: string }
     technicals: technicalPayload.data ?? [],
     fundamentals: fundamentalsPayload.data ?? [],
     earnings: earningsPayload.data ?? [],
+    ratings: ratingsPayload.data,
+    ratingsMeta: ratingsPayload.meta,
     peers
   });
 
@@ -291,6 +297,8 @@ function buildTickerDetail(
     technicals: TechnicalIndicator[];
     fundamentals: Fundamental[];
     earnings: Earnings[];
+    ratings: NormalizedRatings;
+    ratingsMeta: RatingsMeta;
     peers: Ticker[];
   }
 ): TickerDetail | null {
@@ -325,7 +333,9 @@ function buildTickerDetail(
     technicals: providerData.technicals,
     fundamentals: providerData.fundamentals,
     news: providerData.news,
-    candles: providerData.candles
+    candles: providerData.candles,
+    ratings: providerData.ratings,
+    ratingsMeta: providerData.ratingsMeta
   });
 
   return {
@@ -352,7 +362,7 @@ function buildTickerDetail(
     chart: buildChart(providerData.candles),
     keyStats: [
       { label: "Sector", value: sector, detail: "Provider classification" },
-      { label: "Relative Volume", value: overview.relativeVolume, detail: "Versus 30D avg" },
+      { label: "Relative Volume", value: relativeVolumeValue(providerData.technicals), detail: "Versus available average volume" },
       ...(overview.assetType === "ETF" && overview.etfProfile
         ? [
             { label: "Expense Ratio", value: overview.etfProfile.expenseRatio, detail: "Provider ETF profile" },
@@ -378,6 +388,8 @@ function buildTickerDetail(
       ...(!providerData.peers.length ? ["peer comparison"] : [])
     ],
     opportunityAnalysis,
+    ratings: providerData.ratings,
+    ratingsMeta: providerData.ratingsMeta,
     etfProfile: overview.assetType === "ETF" ? overview.etfProfile : null,
     futureProfile: null,
     peers: providerData.peers
@@ -403,6 +415,10 @@ async function fetchRealPeers(symbol: string): Promise<Ticker[]> {
 
 function fundamentalValue(rows: Fundamental[], metric: string) {
   return rows.find((row) => row.metric === metric)?.value ?? "Unavailable";
+}
+
+function relativeVolumeValue(rows: TechnicalIndicator[]) {
+  return rows.find((row) => row.label.toLowerCase().includes("volume"))?.value ?? "Unavailable";
 }
 
 function formatChange(value: number) {
@@ -658,19 +674,77 @@ function OpportunityAnalysis({ analysis }: { analysis: OpportunityScoreResult })
 }
 
 function SignalCard({ signal }: { signal: OpportunityScoreResult["signalScores"][number] }) {
-  const available = signal.status === "available";
+  const available = signal.status === "available" || signal.status === "partial";
+  const statusLabel = signal.status === "partial" ? "Partial" : available ? "Available" : "Unavailable";
   return (
     <div className="rounded-lg border border-white/10 bg-white/[0.045] p-3">
       <div className="flex items-center justify-between gap-2">
         <div className="font-mono text-xs uppercase tracking-[0.12em] text-terminal-muted">{signal.label}</div>
         <span className={available ? "font-mono text-xs text-terminal-green" : "font-mono text-xs text-terminal-muted"}>
-          {available ? "Available" : "Unavailable"}
+          {statusLabel}
         </span>
       </div>
       <div className="mt-2 text-lg font-semibold text-terminal-text">{signal.score === null ? "-" : `${signal.score}/100`}</div>
       <p className="mt-2 text-xs leading-5 text-terminal-muted">{signal.detail}</p>
+      {signal.label === "Ratings" ? <RatingsSignalDetails ratings={signal.ratings} /> : null}
     </div>
   );
+}
+
+function RatingsSignalDetails({ ratings }: { ratings?: NormalizedRatings }) {
+  if (!ratings || ratings.status === "unavailable" || ratings.status === "error") {
+    return (
+      <div className="mt-3 rounded-md border border-white/10 bg-black/10 p-2 text-xs leading-5 text-terminal-muted">
+        Ratings unavailable. Not enough real analyst rating data from configured providers.
+      </div>
+    );
+  }
+
+  const consensusCounts = ratings.consensus ? formatConsensusCounts(ratings.consensus) : null;
+  const recentAction = ratings.recentActions?.[0];
+  const ratingNews = ratings.ratingNews?.slice(0, 3) ?? [];
+
+  return (
+    <div className="mt-3 space-y-2 text-xs leading-5 text-terminal-muted">
+      {ratings.consensus?.consensusLabel ? (
+        <div><span className="text-terminal-text">Consensus:</span> {ratings.consensus.consensusLabel}</div>
+      ) : null}
+      {consensusCounts ? (
+        <div><span className="text-terminal-text">Buy/Hold/Sell:</span> {consensusCounts}</div>
+      ) : null}
+      {ratings.priceTarget?.average ? (
+        <div><span className="text-terminal-text">Avg target:</span> {formatMoney(ratings.priceTarget.average, ratings.priceTarget.currency)}</div>
+      ) : null}
+      {recentAction ? (
+        <div>
+          <span className="text-terminal-text">Recent action:</span>{" "}
+          {[recentAction.firm, recentAction.action, recentAction.rating].filter(Boolean).join(" ")}
+        </div>
+      ) : null}
+      {ratingNews.length && !ratings.consensus ? (
+        <div>
+          <div className="text-terminal-text">Analyst news detected</div>
+          <ul className="mt-1 space-y-1">
+            {ratingNews.map((item) => (
+              <li key={`${item.url}-${item.title}`}>- {item.title}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function formatConsensusCounts(consensus: NonNullable<NormalizedRatings["consensus"]>) {
+  const buy = (consensus.strongBuy ?? 0) + (consensus.buy ?? 0);
+  const hold = consensus.hold ?? 0;
+  const sell = (consensus.sell ?? 0) + (consensus.strongSell ?? 0);
+  return buy || hold || sell ? `${buy} / ${hold} / ${sell}` : null;
+}
+
+function formatMoney(value: number, currency?: string | null) {
+  const prefix = currency && currency !== "USD" ? `${currency} ` : "$";
+  return `${prefix}${value.toFixed(2)}`;
 }
 
 function SignalList({ title, items, fallback }: { title: string; items: string[]; fallback: string }) {

@@ -53,6 +53,18 @@ export type NewsProviderDebugMeta = {
   rejectedWeakMatchBelowThresholdCount?: number;
   acceptedSamples?: Array<{ title: string; source: string; score: number; reasons: string[] }>;
   rejectedSamples?: Array<{ title: string; source: string; score: number; reasons: string[] }>;
+  symbol?: string;
+  requestedAssetType?: string;
+  resolvedAssetType?: string;
+  requestedRange?: string;
+  requestedInterval?: string;
+  providerAttempts?: Array<{ provider: string; symbol: string; status: string; candleCount: number; error?: string }>;
+  selectedProvider?: string | null;
+  candleCount?: number;
+  firstCandleTime?: string | null;
+  lastCandleTime?: string | null;
+  timestampFormat?: string;
+  error?: string;
 };
 
 export type NormalizedQuote = {
@@ -272,35 +284,54 @@ export async function fetchRealHistory(symbol: string, request: HistoryRequest =
   const route = `api/history/${symbol}`;
   const normalizedInterval = normalizeInterval(request.interval);
   const intraday = normalizedInterval !== "1day";
+  const requestedAssetType = inferHistoryAssetType(symbol);
+  const providerAttempts: Array<{ provider: string; symbol: string; status: string; candleCount: number; error?: string }> = [];
 
-  const indexChain = buildMarketIndexHistoryChain(route, symbol, request);
-  if (indexChain) {
-    const result = await indexChain;
+  const indexResult = await buildMarketIndexHistoryChain(route, symbol, request);
+  if (indexResult !== null) {
+    const result = indexResult;
     if (result?.data) {
       logFinal(route, result.source, result.status, true, result.error);
-      return withUpdatedAt(result);
+      return withHistoryMeta(withUpdatedAt(result), symbol, request, requestedAssetType, "index", providerAttempts, result.source);
     }
 
     const error = result?.error ?? "Index history unavailable.";
     logFinal(route, "Unavailable", "unavailable", false, error);
-    return unavailable(error);
+    return withHistoryMeta(unavailable(error), symbol, request, requestedAssetType, "index", providerAttempts, null);
   }
 
-  const providers: Array<() => Promise<AttemptResult<NormalizedHistory>>> = intraday
+  const providers: Array<{ label: string; run: () => Promise<AttemptResult<NormalizedHistory>> }> = intraday
     ? [
-        () => fetchAlpacaHistory(route, symbol, request),
-        () => fetchTwelveDataHistory(route, symbol, request),
-        () => fetchAlphaVantageHistory(route, symbol, request),
-        () => fetchFmpHistory(route, symbol, request)
+        { label: "Alpaca", run: () => fetchAlpacaHistory(route, symbol, request) },
+        { label: "Twelve Data", run: () => fetchTwelveDataHistory(route, symbol, request) },
+        { label: "Alpha Vantage", run: () => fetchAlphaVantageHistory(route, symbol, request) },
+        { label: "Financial Modeling Prep", run: () => fetchFmpHistory(route, symbol, request) }
       ]
     : [
-        () => fetchFmpHistory(route, symbol, request),
-        () => fetchAlphaVantageHistory(route, symbol, request),
-        () => fetchTwelveDataHistory(route, symbol, request),
-        () => fetchAlpacaHistory(route, symbol, request)
+        { label: "Financial Modeling Prep", run: () => fetchFmpHistory(route, symbol, request) },
+        { label: "Alpha Vantage", run: () => fetchAlphaVantageHistory(route, symbol, request) },
+        { label: "Twelve Data", run: () => fetchTwelveDataHistory(route, symbol, request) },
+        { label: "Alpaca", run: () => fetchAlpacaHistory(route, symbol, request) }
       ];
 
-  return firstUsable(route, providers);
+  const errors: string[] = [];
+  for (const provider of providers) {
+    const result = await provider.run().catch((error): AttemptResult<NormalizedHistory> => failed(provider.label, safeError(error)));
+    const candleCount = result.data?.candles.length ?? 0;
+    providerAttempts.push({ provider: result.source || provider.label, symbol, status: result.status, candleCount, error: result.error });
+
+    if (result.data?.candles.length) {
+      logFinal(route, result.source, result.status, true);
+      return withHistoryMeta(withUpdatedAt(result), symbol, request, requestedAssetType, "equity", providerAttempts, result.source);
+    }
+
+    if (result.error) errors.push(`${result.source}: ${result.error}`);
+  }
+
+  const missingConfig = providerAttempts.every((attempt) => attempt.error?.toLowerCase().includes("not configured"));
+  const error = missingConfig ? "Market data provider not configured." : errors.find(Boolean) ?? "Chart data unavailable from configured providers.";
+  logFinal(route, "Unavailable", "unavailable", false, error);
+  return withHistoryMeta(unavailable(error), symbol, request, requestedAssetType, "equity", providerAttempts, null);
 }
 
 export async function fetchRealProfile(symbol: string): Promise<ProviderPayload<NormalizedProfile>> {
@@ -706,7 +737,7 @@ async function fetchFmpHistory(route: string, symbol: string, request: HistoryRe
     : `https://financialmodelingprep.com/stable/historical-price-eod/full?symbol=${encodeURIComponent(symbol)}&limit=${historyLimit(request.range)}&apikey=${serverEnv.fmpApiKey}`;
   const json = await providerJson(route, "FMP history", symbol, url);
   const rows = extractFmpPayloadRows(json.data);
-  const candles = rows.map(normalizeFmpCandle).filter(isCandle).reverse();
+  const candles = filterHistoryCandles(rows.map(normalizeFmpCandle).filter(isCandle).reverse(), request);
   logProvider(route, "FMP", symbol, json.httpStatus, json.keys, candles.length > 0, `usableCandles=${candles.length}`);
   return candles.length ? delayed("Financial Modeling Prep", { symbol, candles }) : failed("Financial Modeling Prep", "FMP historical response had no usable candles.");
 }
@@ -763,9 +794,28 @@ function getMarketIndexHistoryChain(symbol: string): Array<{ provider: "Twelve D
         { provider: "Twelve Data", symbol: "^DJI" },
         { provider: "Twelve Data", symbol: "DJIA" }
       ];
+    case "RUT":
+    case "^RUT":
+      return [
+        { provider: "Twelve Data", symbol: "RUT" },
+        { provider: "Twelve Data", symbol: "^RUT" }
+      ];
+    case "NYA":
+    case "^NYA":
+      return [
+        { provider: "Twelve Data", symbol: "NYA" },
+        { provider: "Twelve Data", symbol: "^NYA" }
+      ];
     default:
       return null;
   }
+}
+
+function inferHistoryAssetType(symbol: string) {
+  const normalized = symbol.toUpperCase();
+  if (getMarketIndexHistoryChain(normalized)) return "index";
+  if (["SPY", "QQQ", "DIA", "IWM", "VTI", "TLT", "GLD", "USO"].includes(normalized)) return "ETF";
+  return "equity";
 }
 
 async function fetchTwelveDataMarketHistoryCandidate(route: string, symbol: string, request: HistoryRequest): Promise<{ data: NormalizedHistory | null; statusCode: number }> {
@@ -775,7 +825,7 @@ async function fetchTwelveDataMarketHistoryCandidate(route: string, symbol: stri
 
   const json = await providerJson(route, "Twelve Data", symbol, `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=1day&outputsize=500&apikey=${serverEnv.twelveDataApiKey}`);
   const rows = Array.isArray(json.data?.values) ? json.data.values : [];
-  const candles = rows.map(normalizeTwelveDataCandle).filter(isCandle).reverse();
+  const candles = filterHistoryCandles(rows.map(normalizeTwelveDataCandle).filter(isCandle).reverse(), request);
   return { data: candles.length ? { symbol, candles } : null, statusCode: json.httpStatus };
 }
 
@@ -786,7 +836,7 @@ async function fetchFmpMarketHistoryCandidate(route: string, symbol: string, req
 
   const json = await providerJson(route, "FMP history", symbol, `https://financialmodelingprep.com/stable/historical-price-eod/full?symbol=${encodeURIComponent(symbol)}&limit=${historyLimit(request.range)}&apikey=${serverEnv.fmpApiKey}`);
   const rows = extractFmpPayloadRows(json.data);
-  const candles = rows.map(normalizeFmpCandle).filter(isCandle).reverse();
+  const candles = filterHistoryCandles(rows.map(normalizeFmpCandle).filter(isCandle).reverse(), request);
   return { data: candles.length ? { symbol, candles } : null, statusCode: json.httpStatus };
 }
 
@@ -800,9 +850,9 @@ async function fetchAlphaVantageHistory(route: string, symbol: string, request: 
     : `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY_ADJUSTED&symbol=${encodeURIComponent(symbol)}&outputsize=compact&apikey=${serverEnv.alphaVantageApiKey}`;
   const json = await providerJson(route, "Alpha Vantage", symbol, url);
   const series = json.data?.["Time Series (Daily)"] ?? json.data?.[`Time Series (${alphaInterval})`];
-  const candles = series && typeof series === "object"
+  const candles = filterHistoryCandles(series && typeof series === "object"
     ? Object.entries(series).map(([date, row]) => normalizeAlphaVantageCandle(date, row)).filter(isCandle).reverse()
-    : [];
+    : [], request);
   logProvider(route, "Alpha Vantage", symbol, json.httpStatus, json.keys, candles.length > 0, `usableCandles=${candles.length}`);
   return candles.length ? delayed("Alpha Vantage", { symbol, candles }) : failed("Alpha Vantage", "Alpha Vantage history response had no usable candles.");
 }
@@ -812,7 +862,7 @@ async function fetchTwelveDataHistory(route: string, symbol: string, request: Hi
   const interval = twelveDataInterval(normalizeInterval(request.interval));
   const json = await providerJson(route, "Twelve Data", symbol, `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${interval}&outputsize=${historyLimit(request.range)}&apikey=${serverEnv.twelveDataApiKey}`);
   const rows = Array.isArray(json.data?.values) ? json.data.values : [];
-  const candles = rows.map(normalizeTwelveDataCandle).filter(isCandle).reverse();
+  const candles = filterHistoryCandles(rows.map(normalizeTwelveDataCandle).filter(isCandle).reverse(), request);
   logProvider(route, "Twelve Data", symbol, json.httpStatus, json.keys, candles.length > 0, `usableCandles=${candles.length}`);
   return candles.length ? delayed("Twelve Data", { symbol, candles }) : failed("Twelve Data", "Twelve Data history response had no usable candles.");
 }
@@ -826,7 +876,7 @@ async function fetchAlpacaHistory(route: string, symbol: string, request: Histor
     "APCA-API-SECRET-KEY": serverEnv.alpacaSecretKey
   });
   const rows = Array.isArray(json.data?.bars) ? json.data.bars : [];
-  const candles = rows.map(normalizeAlpacaCandle).filter(isCandle);
+  const candles = filterHistoryCandles(rows.map(normalizeAlpacaCandle).filter(isCandle), request);
   logProvider(route, "Alpaca", symbol, json.httpStatus, json.keys, candles.length > 0, `usableCandles=${candles.length}`);
   return candles.length ? delayed("Alpaca", { symbol, candles }) : failed("Alpaca", "Alpaca history response had no usable candles.");
 }
@@ -1434,14 +1484,41 @@ function enrichNewsArticle(article: Omit<NormalizedNewsArticle, "publishedLocalT
 }
 
 function makeCandle(timeValue: unknown, openValue: unknown, highValue: unknown, lowValue: unknown, closeValue: unknown, volumeValue: unknown): NormalizedCandle | null {
-  const time = stringFrom(timeValue, "");
+  const time = normalizeCandleTime(stringFrom(timeValue, ""));
   const open = numberFrom(openValue);
   const high = numberFrom(highValue);
   const low = numberFrom(lowValue);
   const close = numberFrom(closeValue);
   const volume = numberFrom(volumeValue) ?? 0;
   if (!time || open === null || high === null || low === null || close === null) return null;
-  return { time: time.includes("T") ? time : time.slice(0, 10), open, high, low, close, volume };
+  return { time, open, high, low, close, volume };
+}
+
+function normalizeCandleTime(value: string) {
+  const raw = value.trim();
+  if (!raw) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(raw)) return `${raw.replace(" ", "T").replace(/\s+/g, "")}${/[zZ]|[+-]\d{2}:?\d{2}$/.test(raw) ? "" : "Z"}`;
+  return raw;
+}
+
+function filterHistoryCandles(candles: NormalizedCandle[], request: HistoryRequest) {
+  if (!candles.length) return candles;
+  const interval = normalizeInterval(request.interval);
+
+  if (interval !== "1day") {
+    const cutoff = Date.now() - historyDays(request.range) * 24 * 60 * 60 * 1000;
+    const filtered = candles.filter((candle) => candle.time.includes("T") && new Date(candle.time).getTime() >= cutoff);
+    return filtered.length ? filtered : candles.slice(-1000);
+  }
+
+  if ((request.range ?? "").toLowerCase() === "ytd") {
+    const year = String(new Date().getUTCFullYear());
+    const ytd = candles.filter((candle) => candle.time.startsWith(year));
+    return ytd.length ? ytd : candles.slice(-historyLimit(request.range));
+  }
+
+  return candles.slice(-historyLimit(request.range));
 }
 
 function isCandle(candle: NormalizedCandle | null): candle is NormalizedCandle {
@@ -1471,6 +1548,36 @@ function providerMissing<T>(route: string, provider: string, query: string): Att
 
 function withUpdatedAt<T>(result: AttemptResult<T>): ProviderPayload<T> {
   return { ...result, updatedAt: new Date().toISOString() };
+}
+
+function withHistoryMeta<T extends NormalizedHistory>(
+  payload: ProviderPayload<T>,
+  symbol: string,
+  request: HistoryRequest,
+  requestedAssetType: string,
+  resolvedAssetType: string,
+  providerAttempts: Array<{ provider: string; symbol: string; status: string; candleCount: number; error?: string }>,
+  selectedProvider: string | null
+): ProviderPayload<T> {
+  const candles = payload.data?.candles ?? [];
+  return {
+    ...payload,
+    meta: {
+      ...(payload.meta ?? emptyNewsMeta()),
+      symbol,
+      requestedAssetType,
+      resolvedAssetType,
+      requestedRange: request.range ?? "1Y",
+      requestedInterval: request.interval ?? "1d",
+      providerAttempts,
+      selectedProvider,
+      candleCount: candles.length,
+      firstCandleTime: candles[0]?.time ?? null,
+      lastCandleTime: candles.at(-1)?.time ?? null,
+      timestampFormat: candles.some((candle) => candle.time.includes("T")) ? "utc-instant" : "business-day",
+      error: payload.error
+    }
+  };
 }
 
 function logProvider(route: string, provider: string, query: string, status: number, keys: string[], usable: boolean, extra = "") {
@@ -2627,9 +2734,9 @@ function historyDays(range?: string) {
   const value = (range ?? "1Y").toLowerCase();
   if (value === "1d") return 2;
   if (value === "5d") return 7;
-  if (value === "1m") return 31;
-  if (value === "3m") return 93;
-  if (value === "6m") return 186;
+  if (value === "1m" || value === "1mo") return 31;
+  if (value === "3m" || value === "3mo") return 93;
+  if (value === "6m" || value === "6mo") return 186;
   if (value === "ytd") return Math.max(1, Math.ceil((Date.now() - Date.UTC(new Date().getUTCFullYear(), 0, 1)) / 86_400_000));
   if (value === "5y") return 365 * 5;
   return 370;

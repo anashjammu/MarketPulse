@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "MarketPulse",
-  description: "Live market data, news, futures, macro, and ticker research in one terminal."
+  title: "StockerView",
+  description: "StockerView market research terminal for live market data, news, futures, macro, and ticker analysis."
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

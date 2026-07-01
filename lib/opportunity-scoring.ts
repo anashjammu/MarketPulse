@@ -1,11 +1,14 @@
+import type { NormalizedRatings, RatingsMeta } from "@/lib/server/providers/ratings";
+
 export type SetupLabel = "Strong setup" | "Constructive setup" | "Mixed setup" | "Weak setup" | "Poor setup" | "Limited data";
-export type SignalStatus = "available" | "unavailable";
+export type SignalStatus = "available" | "partial" | "unavailable";
 
 export type SetupSignalScore = {
-  label: "Trend" | "Momentum" | "Volume" | "Valuation" | "Growth" | "News" | "Risk";
+  label: "Trend" | "Momentum" | "Volume" | "Valuation" | "Growth/Fundamentals" | "News/Sentiment" | "Ratings" | "Risk";
   status: SignalStatus;
   score: number | null;
   detail: string;
+  ratings?: NormalizedRatings;
 };
 
 type SetupTechnical = {
@@ -39,6 +42,8 @@ export type OpportunityScoreInput = {
   fundamentals?: SetupFundamental[];
   news?: SetupNews[];
   candles?: SetupCandle[];
+  ratings?: NormalizedRatings;
+  ratingsMeta?: RatingsMeta;
 };
 
 export type OpportunityScoreResult = {
@@ -60,9 +65,20 @@ export type OpportunityScoreResult = {
   catalystWatch: string[];
   isUnavailable: boolean;
   unavailableReason?: string;
+  meta?: {
+    ratings?: {
+      status: RatingsMeta["status"];
+      sourcesUsed: string[];
+      consensusAvailable: boolean;
+      priceTargetAvailable: boolean;
+      recentActionsCount: number;
+      ratingNewsCount: number;
+      unavailableReason?: string;
+    };
+  };
 };
 
-const signalTotal = 7;
+const signalTotal = 8;
 
 export function calculateOpportunityScore(tickerData: OpportunityScoreInput): OpportunityScoreResult {
   const signals = [
@@ -72,9 +88,10 @@ export function calculateOpportunityScore(tickerData: OpportunityScoreInput): Op
     scoreValuation(tickerData),
     scoreGrowth(tickerData),
     scoreNews(tickerData),
+    scoreRatings(tickerData),
     scoreRisk(tickerData)
   ];
-  const availableSignals = signals.filter((signal) => signal.status === "available" && signal.score !== null);
+  const availableSignals = signals.filter((signal) => (signal.status === "available" || signal.status === "partial") && signal.score !== null);
   const unavailableSignals = signals.filter((signal) => signal.status === "unavailable");
   const availableLabels = availableSignals.map((signal) => signal.label);
   const unavailableLabels = unavailableSignals.map((signal) => signal.label);
@@ -99,7 +116,8 @@ export function calculateOpportunityScore(tickerData: OpportunityScoreInput): Op
       risks: buildUnavailableRisks(unavailableLabels),
       catalystWatch: ["Ticker-specific news and provider fundamentals can improve this setup review when available."],
       isUnavailable: true,
-      unavailableReason: "Not enough real provider data is available to produce a reliable setup analysis."
+      unavailableReason: "Not enough real provider data is available to produce a reliable setup analysis.",
+      meta: buildMeta(tickerData)
     };
   }
 
@@ -119,7 +137,8 @@ export function calculateOpportunityScore(tickerData: OpportunityScoreInput): Op
     recoveryCatalysts: buildRecoveryCatalysts(signals),
     risks: buildRisks(signals),
     catalystWatch: buildCatalystWatch(tickerData),
-    isUnavailable: false
+    isUnavailable: false,
+    meta: buildMeta(tickerData)
   };
 }
 
@@ -193,14 +212,36 @@ function scoreValuation(data: OpportunityScoreInput): SetupSignalScore {
 }
 
 function scoreGrowth(data: OpportunityScoreInput): SetupSignalScore {
-  return unavailable("Growth", "Revenue growth, EPS growth, and margin trend data unavailable from current provider response.");
+  return unavailable("Growth/Fundamentals", "Revenue growth, EPS growth, and margin trend data unavailable from current provider response.");
 }
 
 function scoreNews(data: OpportunityScoreInput): SetupSignalScore {
   const newsCount = data.news?.length ?? 0;
-  if (!newsCount) return unavailable("News", "Ticker-specific news unavailable.");
+  if (!newsCount) return unavailable("News/Sentiment", "Ticker-specific news unavailable.");
   const score = newsCount >= 5 ? 72 : newsCount >= 2 ? 62 : 52;
-  return available("News", score, `Ticker-specific news flow is active with ${newsCount} recent article${newsCount === 1 ? "" : "s"}.`);
+  return available("News/Sentiment", score, `Ticker-specific news flow is active with ${newsCount} recent article${newsCount === 1 ? "" : "s"}.`);
+}
+
+function scoreRatings(data: OpportunityScoreInput): SetupSignalScore {
+  const ratings = data.ratings;
+  if (!ratings || ratings.status === "unavailable" || ratings.status === "error") {
+    return unavailable("Ratings", ratings?.unavailableReason ?? "Not enough real analyst rating data from configured providers.");
+  }
+
+  const consensusScore = ratings.consensus ? scoreConsensus(ratings.consensus) : null;
+  const actionScore = scoreRecentActions(ratings);
+  const scores = [consensusScore, actionScore].filter((score): score is number => score !== null);
+  const status: SignalStatus = ratings.status === "partial" ? "partial" : "available";
+  const score = scores.length ? averageScore(scores) : ratings.ratingNews?.length ? 55 : null;
+  const details = [
+    ratings.consensus?.consensusLabel ? `Consensus: ${ratings.consensus.consensusLabel}` : null,
+    ratings.priceTarget?.average ? `average target ${formatCurrency(ratings.priceTarget.average, ratings.priceTarget.currency)}` : null,
+    ratings.recentActions?.length ? `${ratings.recentActions.length} recent analyst action${ratings.recentActions.length === 1 ? "" : "s"}` : null,
+    ratings.ratingNews?.length ? `${ratings.ratingNews.length} rating-related headline${ratings.ratingNews.length === 1 ? "" : "s"}` : null
+  ].filter(Boolean);
+
+  if (score === null) return unavailable("Ratings", "Not enough real analyst rating data from configured providers.");
+  return { label: "Ratings", status, score, detail: details.length ? `${details.join("; ")}.` : "Real rating signal available.", ratings };
 }
 
 function scoreRisk(data: OpportunityScoreInput): SetupSignalScore {
@@ -245,8 +286,8 @@ function buildRecoveryCatalysts(signals: SetupSignalScore[]) {
   const unavailable = signals.filter((signal) => signal.status === "unavailable").map((signal) => signal.label);
   const items = [
     "Price reclaiming or holding key moving averages.",
-    signals.some((signal) => signal.label === "News" && signal.status === "available") ? "Sustained positive company-specific news flow." : null,
-    unavailable.includes("Growth") || unavailable.includes("Valuation") ? "Real earnings, valuation, and growth updates from providers." : null
+    signals.some((signal) => signal.label === "News/Sentiment" && signal.status === "available") ? "Sustained positive company-specific news flow." : null,
+    unavailable.includes("Growth/Fundamentals") || unavailable.includes("Valuation") ? "Real earnings, valuation, and growth updates from providers." : null
   ].filter(Boolean) as string[];
   return items.length ? items : ["Not enough real data available for this signal."];
 }
@@ -288,6 +329,55 @@ function available(label: SetupSignalScore["label"], score: number, detail: stri
 
 function unavailable(label: SetupSignalScore["label"], detail: string): SetupSignalScore {
   return { label, status: "unavailable", score: null, detail };
+}
+
+function scoreConsensus(consensus: NonNullable<NormalizedRatings["consensus"]>) {
+  const strongBuy = consensus.strongBuy ?? 0;
+  const buy = consensus.buy ?? 0;
+  const hold = consensus.hold ?? 0;
+  const sell = consensus.sell ?? 0;
+  const strongSell = consensus.strongSell ?? 0;
+  const total = strongBuy + buy + hold + sell + strongSell;
+  if (total > 0) {
+    return Math.round(((strongBuy * 100 + buy * 82 + hold * 55 + sell * 28 + strongSell * 12) / total));
+  }
+  const label = consensus.consensusLabel?.toLowerCase() ?? "";
+  if (label.includes("buy") || label.includes("outperform") || label.includes("overweight")) return 72;
+  if (label.includes("sell") || label.includes("underperform") || label.includes("underweight")) return 30;
+  if (label.includes("hold") || label.includes("neutral")) return 55;
+  return null;
+}
+
+function scoreRecentActions(ratings: NormalizedRatings) {
+  const items = [...(ratings.recentActions ?? []).map((action) => `${action.action ?? ""} ${action.rating ?? ""}`), ...(ratings.ratingNews ?? []).map((item) => item.detectedAction)];
+  if (!items.length) return null;
+  const scores = items.map((text) => {
+    const normalized = text.toLowerCase();
+    if (normalized.includes("upgrade") || normalized.includes("raise") || normalized.includes("overweight") || normalized.includes("outperform") || normalized.includes("buy")) return 72;
+    if (normalized.includes("downgrade") || normalized.includes("lower") || normalized.includes("underperform") || normalized.includes("sell")) return 32;
+    return 55;
+  });
+  return averageScore(scores);
+}
+
+function buildMeta(data: OpportunityScoreInput): OpportunityScoreResult["meta"] {
+  if (!data.ratingsMeta) return undefined;
+  return {
+    ratings: {
+      status: data.ratingsMeta.status,
+      sourcesUsed: data.ratingsMeta.sourcesUsed,
+      consensusAvailable: data.ratingsMeta.consensusAvailable,
+      priceTargetAvailable: data.ratingsMeta.priceTargetAvailable,
+      recentActionsCount: data.ratingsMeta.recentActionsCount,
+      ratingNewsCount: data.ratingsMeta.ratingNewsCount,
+      unavailableReason: data.ratingsMeta.unavailableReason
+    }
+  };
+}
+
+function formatCurrency(value: number, currency?: string | null) {
+  const prefix = currency && currency !== "USD" ? `${currency} ` : "$";
+  return `${prefix}${value.toFixed(2)}`;
 }
 
 function technicalNumber(technicals: SetupTechnical[] | undefined, labelIncludes: string) {

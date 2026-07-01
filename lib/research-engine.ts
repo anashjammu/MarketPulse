@@ -42,7 +42,7 @@ export const researchDisclaimer =
   "AI analysis is generated from the sources and market data listed below. It is for research and education only, not financial advice. Data may be delayed, incomplete, or inaccurate.";
 
 export const footerResearchDisclaimer =
-  "MarketPulse is for research and educational purposes only. Not financial advice. Data may be delayed, incomplete, or inaccurate.";
+  "StockerView is for research and educational purposes only. Not financial advice. Data may be delayed, incomplete, or inaccurate.";
 
 export const newsSources: NewsSourceItem[] = [];
 
@@ -127,7 +127,7 @@ export function generateSourceGroundedAnalysis({
     generatedAt: new Date().toISOString(),
     plainEnglishSummary: `${topic} analysis is unavailable because provider data has not been connected.`,
     whatHappened: "Data unavailable.",
-    whyItMatters: "Provider data is required before MarketPulse can generate a source-grounded explanation.",
+    whyItMatters: "Provider data is required before StockerView can generate a source-grounded explanation.",
     bullCase: "Data unavailable.",
     bearCase: "Data unavailable.",
     keyCatalysts: ["Data unavailable"],
