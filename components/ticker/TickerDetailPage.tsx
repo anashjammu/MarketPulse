@@ -19,6 +19,8 @@ import {
   fetchRealTickerNews,
   type NormalizedNewsArticle
 } from "@/lib/provider-gateway";
+import { buildStockerViewInsight } from "@/lib/stocker-insight";
+import { enhanceInsightWithAI } from "@/lib/stocker-insight-ai";
 import { fetchPeers, fetchTickerOverview, type AssetType, type ETFProfile, type FutureProfile } from "@/lib/ticker-service";
 
 type KeyStat = {
@@ -227,7 +229,7 @@ export async function TickerDetailPage({ symbol: rawSymbol }: { symbol: string }
     <TerminalShell
       active=""
       title={`${detail.symbol} Research`}
-      subtitle="Price chart, key stats, setup analysis, earnings, latest news, peer comparison, and AI insight."
+      subtitle="Price chart, key stats, setup analysis, earnings, latest news, peer comparison, and StockerView Insight."
     >
       <div className="grid gap-4 md:gap-5">
         <Panel
@@ -674,8 +676,8 @@ function formatAssetType(assetType: AssetType) {
   return assetType;
 }
 
-function BeginnerTopInsight({ detail }: { detail: TickerDetail }) {
-  const profile = beginnerInsightData(detail);
+async function BeginnerTopInsight({ detail }: { detail: TickerDetail }) {
+  const profile = await beginnerInsightData(detail);
 
   return (
     <Panel
@@ -683,6 +685,22 @@ function BeginnerTopInsight({ detail }: { detail: TickerDetail }) {
       action={<span className="text-xs text-terminal-muted">StockerView Insight</span>}
     >
       <div className="grid gap-3">
+        <div className="rounded-xl border border-terminal-line bg-terminal-panel2 p-3">
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div>
+              <div className="text-xs font-medium uppercase tracking-[0.08em] text-terminal-muted">Action label</div>
+              <div className="mt-2"><SimpleTonePill label={profile.actionLabel} /></div>
+              <div className="mt-2 text-xs text-terminal-muted">Style: {profile.actionStyle}</div>
+            </div>
+            <div>
+              <div className="text-xs font-medium uppercase tracking-[0.08em] text-terminal-muted">StockerView Score</div>
+              <div className="mt-2 text-2xl font-semibold text-terminal-cyan">{formatInsightScore(profile.score)}</div>
+              <div className="mt-2 text-xs text-terminal-muted">Educational label only. Not financial advice.</div>
+            </div>
+          </div>
+          <div className="mt-3 text-xs text-terminal-muted">{profile.summaryModeText}</div>
+        </div>
+
         <InsightBlock title="Simple Answer" text={profile.simpleAnswer} label={profile.simpleLabel} />
         <div className="rounded-xl border border-terminal-line bg-terminal-panel2 p-3">
           <div className="text-xs font-medium uppercase tracking-[0.08em] text-terminal-muted">Quick reasons</div>
@@ -701,33 +719,28 @@ function BeginnerTopInsight({ detail }: { detail: TickerDetail }) {
             Expand insight
           </summary>
           <div className="mt-3 grid gap-3">
-            <InsightBlock title="Why It May Be Moving" text={profile.whyMoving} />
+            <InsightBlock title="News Summary" text={profile.newsSummary} />
             <div className="grid gap-3 xl:grid-cols-2">
               <InsightListBlock title="What Looks Positive" items={profile.whatLooksGood} tone="good" />
               <InsightListBlock title="What Looks Concerning" items={profile.whatLooksRisky} tone="risk" />
             </div>
+            <InsightBlock title="Chart / Trend" text={profile.chartTrendExplanation} />
             <InsightBlock title="Look Now or Wait?" text={profile.researchOrWait} />
-            <div className="rounded-xl border border-terminal-line bg-terminal-panel p-3">
-              <div className="text-xs font-medium uppercase tracking-[0.08em] text-terminal-muted">Before You Decide</div>
-              <ul className="mt-2 space-y-1.5">
-                {profile.beforeYouDecide.map((item) => (
-                  <li key={item} className="text-sm leading-6 text-terminal-text">
-                    <span className="mr-2 text-terminal-cyan">-</span>
-                    {item}
-                  </li>
-                ))}
-              </ul>
-            </div>
             <div className="grid gap-3 xl:grid-cols-2">
               <InsightListBlock title="What would make this stronger" items={profile.whatImproves} tone="neutral" />
               <InsightListBlock title="What would make this weaker" items={profile.whatWeakens} tone="neutral" />
             </div>
+            <InsightArticleList articles={profile.articlesUsed} />
           </div>
         </details>
-        <p className="text-xs leading-5 text-terminal-muted">Educational tool only. Not financial advice.</p>
+        <p className="text-xs leading-5 text-terminal-muted">{profile.disclaimer}</p>
       </div>
     </Panel>
   );
+}
+
+function formatInsightScore(score: number | null) {
+  return score === null ? "Limited data" : `${score}/100`;
 }
 
 function InsightBlock({ title, text, label }: { title: string; text: string; label?: string }) {
@@ -771,104 +784,113 @@ function InsightListBlock({ title, items, tone }: { title: string; items: string
   );
 }
 
-function beginnerInsightData(detail: TickerDetail) {
-  const companyDescription = findFundamental(detail.fundamentals, "Description") || detail.name;
-  const rsi = technicalValue(detail.technicals, "RSI");
-  const relVol = technicalValue(detail.technicals, "Volume");
-  const peerBeat = peerDirectionSummary(detail);
-  const earningsSummary = latestEarningsSummary(detail);
-  const ratingSummary = ratingsSummary(detail.ratings);
-  const newsSummary = newsSummaryLine(detail.news);
-  const trendSummaryValue = trendDirectionSummary(detail);
-  const momentumSummaryValue = momentumSummary(detail);
-  const setupTone = simpleSetupLabel(detail);
+function InsightArticleList({ articles }: { articles: Array<{ title: string; source: string; time: string; url: string; snippet: string }> }) {
+  if (!articles.length) {
+    return (
+      <div className="rounded-xl border border-terminal-line bg-terminal-panel2 p-3">
+        <div className="text-xs font-medium uppercase tracking-[0.08em] text-terminal-muted">Recent articles used</div>
+        <p className="mt-2 text-sm text-terminal-muted">No recent ticker-specific articles were available.</p>
+      </div>
+    );
+  }
 
-  const simpleAnswer =
-    setupTone === "Looks strong"
-      ? `${detail.symbol} looks strong right now. ${companyDescription} and current trend/momentum signals are supportive, but risk is still present and needs monitoring.`
-      : setupTone === "Mixed"
-        ? `${detail.symbol} looks mixed right now. The business may look solid, but the stock setup is not clearly strong yet based on trend, momentum, and current news.`
-        : setupTone === "Worth watching"
-          ? `${detail.symbol} may be worth watching. Some signals look constructive, but confirmation from trend, earnings, and news would make the setup clearer.`
-          : setupTone === "Higher risk"
-            ? `${detail.symbol} looks higher risk right now. Price action and/or sentiment are weak, so a clearer setup may be needed before acting.`
-            : `${detail.symbol} does not have enough complete data for a clear read right now.`;
+  return (
+    <div className="rounded-xl border border-terminal-line bg-terminal-panel2 p-3">
+      <div className="text-xs font-medium uppercase tracking-[0.08em] text-terminal-muted">Recent articles used</div>
+      <div className="mt-2 grid gap-2">
+        {articles.map((article) => (
+          <a
+            key={`${article.url}-${article.title}`}
+            href={article.url}
+            target="_blank"
+            rel="noreferrer"
+            className="rounded-md border border-terminal-line bg-terminal-panel p-2 text-xs leading-5 text-terminal-muted transition hover:border-terminal-cyan/30 hover:text-terminal-text"
+          >
+            <div className="text-terminal-text">{article.title}</div>
+            <div className="mt-1">{article.source} · <SimpleLocalTime value={article.time} /></div>
+            {article.snippet ? <div className="mt-1">{article.snippet}</div> : null}
+          </a>
+        ))}
+      </div>
+    </div>
+  );
+}
 
-  const whatLooksGood = [
-    detail.revenueGrowth !== "Unavailable" ? `Sales are growing (${detail.revenueGrowth}), which can mean demand is improving.` : "Revenue growth data is unavailable right now.",
-    detail.grossMargin !== "Unavailable" ? `Margins are ${detail.grossMargin}, which can mean the company keeps more money from each sale.` : "Gross margin data is unavailable right now.",
-    ratingSummary.positive.replace("Ratings consensus", "Analyst views").replace("Some analyst activity is available.", "Analyst coverage is available, but opinions can change quickly."),
-    peerBeat.good
-  ];
+async function beginnerInsightData(detail: TickerDetail) {
+  const overview = {
+    ...fetchTickerOverview(detail.symbol),
+    symbol: detail.symbol,
+    name: detail.name,
+    changePercent: detail.change
+  };
 
-  const whatLooksRisky = [
-    detail.debtEquity !== "Unavailable" ? `Debt/Equity is ${detail.debtEquity}; high debt can increase downside risk if results weaken.` : "Debt data is missing, so balance-sheet risk is harder to judge.",
-    ratingSummary.risk,
-    trendRiskLine(detail).replace("20D", "short-term").replace("50D", "medium-term").replace("200D", "long-term"),
-    peerBeat.risk
-  ];
+  const ruleBasedInsight = buildStockerViewInsight({
+    symbol: detail.symbol,
+    companyName: detail.name,
+    overview,
+    technicals: detail.technicals,
+    fundamentals: detail.fundamentals.map((row) => ({ ...row, context: "ticker detail" })),
+    earnings: detail.earnings,
+    news: detail.news.map((item) => ({
+      id: `${item.time}-${item.headline}`,
+      headline: item.headline,
+      title: item.headline,
+      sourceName: item.source,
+      url: item.url,
+      publishedAt: item.time,
+      publishedLocalTime: item.time,
+      localDateBucket: "today",
+      primaryCategory: "Ticker",
+      categories: ["Ticker"],
+      category: "Ticker",
+      relatedTickers: item.relatedTickers,
+      snippet: item.snippet
+    })),
+    ratings: detail.ratings,
+    peerChanges: detail.peers.map((peer) => ({ symbol: peer.symbol, change: peer.change })),
+    opportunity: detail.opportunityAnalysis
+  });
 
-  const whyMoving = [
-    `${detail.change >= 0 ? "Price is up" : "Price is down"} ${formatChangeMagnitude(detail.change)} today, and ${volumeSummary(relVol)}.`,
-    trendSummaryValue,
-    momentumSummaryValue,
-    newsSummary,
-    earningsSummary,
-    ratingMoveLine(detail.ratings),
-    peerMoveLine(detail)
-  ].join(" ");
+  const enhanced = await enhanceInsightWithAI(ruleBasedInsight);
+  const aiInsight = enhanced.insight;
+
+  const enrichedArticles = aiInsight.articlesUsed.map((article) => {
+    const match = ruleBasedInsight.articlesUsed.find((candidate) => candidate.url === article.url);
+    return {
+      title: article.title,
+      source: article.source,
+      url: article.url,
+      time: match?.time ?? ruleBasedInsight.generatedAt,
+      snippet: match?.snippet ?? ""
+    };
+  });
 
   const quickReasons = [
-    trendSummaryValue,
-    momentumSummaryValue,
-    newsSummary
-  ].map((reason) => compactReason(reason));
-
-  const mixedSignal = detail.opportunityAnalysis.label === "Mixed setup" || detail.opportunityAnalysis.label === "Weak setup" || detail.opportunityAnalysis.label === "Poor setup";
-  const researchOrWait = mixedSignal
-    ? "This looks mixed. It may make sense to watch whether price and momentum improve before making a decision."
-    : setupTone === "Looks strong"
-      ? "This looks stronger, but it is still important to compare valuation, earnings, and recent news before deciding."
-      : setupTone === "Higher risk"
-        ? "This looks higher risk right now. Waiting for clearer price strength or better news may make sense."
-        : "This may be worth watching. A clearer trend and more supportive updates would improve confidence.";
-
-  const beforeYouDecide = [
-    "What does the company do?",
-    "Is revenue growing?",
-    "Is the company profitable?",
-    "Is the stock trending up or down?",
-    "Is recent news positive or negative?",
-    "Is it expensive compared with growth?",
-    "How does it compare with peers?",
-    "Are you comfortable with the risk?"
-  ];
-
-  const whatImproves = [
-    "Price holds above short-term and medium-term trend levels.",
-    "Trading activity supports up moves instead of fading.",
-    "Earnings and revenue updates stay strong or improve.",
-    "News flow remains constructive and company-specific."
-  ];
-
-  const whatWeakens = [
-    "Price falls below key trend levels and cannot recover.",
-    "Trading activity rises more on down days than up days.",
-    "Earnings disappointments or weaker forward guidance.",
-    "Negative company-specific news or broad peer/sector weakness."
-  ];
+    ruleBasedInsight.quickReasons[0],
+    aiInsight.whatLooksPositive[0] ?? ruleBasedInsight.quickReasons[1],
+    aiInsight.whatLooksConcerning[0] ?? ruleBasedInsight.quickReasons[2]
+  ].filter(Boolean).slice(0, 3);
 
   return {
-    simpleAnswer,
-    whatLooksGood,
-    whatLooksRisky,
-    whyMoving,
-    researchOrWait,
-    beforeYouDecide,
-    whatImproves,
-    whatWeakens,
-    simpleLabel: setupTone,
-    quickReasons
+    simpleAnswer: aiInsight.simpleAnswer,
+    whatLooksGood: aiInsight.whatLooksPositive,
+    whatLooksRisky: aiInsight.whatLooksConcerning,
+    whyMoving: aiInsight.whyMoving,
+    researchOrWait: aiInsight.lookNowOrWait,
+    whatImproves: aiInsight.whatWouldImprove,
+    whatWeakens: aiInsight.whatWouldWorsen,
+    simpleLabel: aiInsight.actionLabel,
+    quickReasons,
+    actionLabel: aiInsight.actionLabel,
+    actionStyle: ruleBasedInsight.actionStyle,
+    score: aiInsight.score,
+    newsSummary: ruleBasedInsight.newsSummary,
+    chartTrendExplanation: ruleBasedInsight.chartTrendExplanation,
+    articlesUsed: enrichedArticles,
+    disclaimer: ruleBasedInsight.disclaimer,
+    summaryModeText: enhanced.aiAssisted
+      ? "AI-assisted summary from available market data and articles."
+      : "Summary from available market data and articles."
   };
 }
 
